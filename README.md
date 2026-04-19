@@ -51,6 +51,13 @@ That repository provides the MemPalace-aware routing layer used for:
 
 If you are deploying or evaluating the MemPalace integration, install and configure that repository as part of the stack.
 
+A typical setup keeps both repositories side by side:
+
+```bash
+git clone https://github.com/iggut/hermes-agent.git
+git clone https://github.com/iggut/hermes_mempalace_routing.git
+```
+
 ## Quick Install
 
 ```bash
