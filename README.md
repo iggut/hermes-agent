@@ -44,10 +44,11 @@ It is maintained as a practical downstream distribution: upstream-compatible whe
 For MemPalace-first durable memory workflows, this fork is designed to work alongside the companion [hermes_mempalace_routing](https://github.com/iggut/hermes_mempalace_routing) repository.
 
 That repository provides the MemPalace-aware routing layer used for:
-- raw artifact storage
 - memory envelopes with provenance
 - route-based context selection
 - evidence-backed prompt assembly
+
+MemPalace remains the source of truth for the raw data; the companion layer keeps routing and prompt assembly focused on metadata and evidence rather than duplicating storage.
 
 If you are deploying or evaluating the MemPalace integration, install and configure that repository as part of the stack.
 
