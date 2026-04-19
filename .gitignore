@@ -17,10 +17,19 @@ __pycache__/web_tools.cpython-310.pyc
 logs/
 data/
 .pytest_cache/
-tmp/
-temp_vision_images/
+/tmp/
+/temp_vision_images/
 hermes-*/*
-examples/
+
+# Unrelated local artifacts from headroom / build work
+HEADROOM_INTEGRATION.md
+HEADROOM_*
+agent/headroom.py
+agent/hybrid_context_compressor.py
+tests/test_headroom.py
+verify_headroom.py
+build/
+
 tests/quick_test_dataset.jsonl
 tests/sample_dataset.jsonl
 run_datagen_kimik2-thinking.sh
