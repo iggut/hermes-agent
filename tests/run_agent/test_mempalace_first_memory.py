@@ -1,14 +1,22 @@
 from __future__ import annotations
 
-from pathlib import Path
+import sys
+import types
 from types import SimpleNamespace
 
+import pytest
+
+sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
+sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
+sys.modules.setdefault("fal_client", types.SimpleNamespace())
+
+import run_agent
 from plugins.memory import mempalace as mempalace_mod
 from plugins.memory.mempalace import MemPalaceMemoryProvider
 
 
 class _FakeRoutingConfig:
-    def __init__(self, base_dir: Path, storage_backend: str = "sqlite", **kwargs) -> None:
+    def __init__(self, base_dir, storage_backend: str = "sqlite", **kwargs) -> None:
         self.base_dir = base_dir
         self.storage_backend = storage_backend
         self.enabled = kwargs.get("enabled", True)
@@ -18,7 +26,7 @@ class _FakeRoutingConfig:
 class _FakeRoutingPlugin:
     created = []
 
-    def __init__(self, config: _FakeRoutingConfig, mempalace_tools=None) -> None:
+    def __init__(self, config, mempalace_tools=None) -> None:
         self.config = config
         self.bound_tools = dict(mempalace_tools or {})
         self._mempalace = SimpleNamespace(tooling_ready=lambda: bool(self.bound_tools))
@@ -35,26 +43,8 @@ class _FakeHostHooks:
         self.resume_calls = []
         _FakeHostHooks.created.append(self)
 
-    @classmethod
-    def from_config(cls, config: _FakeRoutingConfig) -> "_FakeHostHooks":
-        return cls(config)
-
     def install_into(self, host, *, overwrite: bool = True):
         return host
-
-    def session_wake_or_resume(self, *, query: str, active_project=None, task_hint=None):
-        self.resume_calls.append(
-            {
-                "query": query,
-                "active_project": active_project,
-                "task_hint": task_hint,
-            }
-        )
-        return {
-            "mempalace_status": {"ok": True},
-            "resume_envelopes": [{"memory_id": "resume-1"}],
-            "resume_error": None,
-        }
 
     def pre_model_context_assembly(self, *, query: str, total_tokens: int, active_project=None, mode: str):
         self.prefetch_calls.append(
@@ -75,7 +65,7 @@ class _FakeHostHooks:
         fact_type: str,
         summary: str,
         raw_text: str,
-        route_tags: list[str] | None = None,
+        route_tags=None,
         conflict_key=None,
         pinned: bool = False,
     ):
@@ -91,28 +81,66 @@ class _FakeHostHooks:
                 "pinned": pinned,
             }
         )
+        return {"memory_id": "mem_123", "provenance_artifact_ids": ["art_123"]}
+
+    def session_wake_or_resume(self, *, query: str, active_project=None, task_hint=None):
+        self.resume_calls.append(
+            {
+                "query": query,
+                "active_project": active_project,
+                "task_hint": task_hint,
+            }
+        )
         return {
-            "memory_id": "mem_123",
-            "provenance_artifact_ids": ["art_123"],
+            "mempalace_status": {"ok": True},
+            "resume_envelopes": [{"memory_id": "resume-1"}],
+            "resume_error": None,
         }
 
 
-def test_mempalace_provider_uses_host_hooks_for_prefetch_and_sync(monkeypatch, tmp_path: Path) -> None:
-    _FakeHostHooks.created.clear()
+@pytest.fixture(autouse=True)
+def _reset_fake_hooks():
     _FakeRoutingPlugin.created.clear()
+    _FakeHostHooks.created.clear()
+    yield
+
+
+def test_mempalace_first_disables_builtin_durable_memory_flush(monkeypatch):
+    calls = []
+
+    def _unexpected_memory_tool(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("builtin memory tool should not be invoked when disabled")
+
+    monkeypatch.setattr("tools.memory_tool.memory_tool", _unexpected_memory_tool)
+
+    agent = SimpleNamespace(
+        _disable_builtin_durable_memory=True,
+        _memory_flush_min_turns=0,
+        _memory_store=SimpleNamespace(),
+        _memory_enabled=False,
+        _user_profile_enabled=False,
+        _user_turn_count=99,
+        valid_tool_names={"memory"},
+        _cached_system_prompt="",
+        api_mode="codex_responses",
+        quiet_mode=True,
+    )
+
+    run_agent.AIAgent.flush_memories(agent, messages=[{"role": "user", "content": "hello"}])
+
+    assert calls == []
+
+
+def test_mem_pmalace_provider_binds_tools_and_resumes_on_initialize(monkeypatch, tmp_path):
     monkeypatch.setattr(mempalace_mod, "HermesHostHooks", _FakeHostHooks)
     monkeypatch.setattr(mempalace_mod, "HermesMemPalaceRoutingConfig", _FakeRoutingConfig)
     monkeypatch.setattr(mempalace_mod, "HermesMemPalaceRoutingPlugin", _FakeRoutingPlugin)
-    monkeypatch.setattr(
-        mempalace_mod,
-        "_build_mempalace_tool_bindings",
-        lambda tool_timeout=10.0: {"mempalace_status": lambda: {"ok": True}},
-    )
-    monkeypatch.setattr(
-        MemPalaceMemoryProvider,
-        "_build_wake_up_context",
-        lambda self: setattr(self, "_wake_up_context", "wake"),
-    )
+    monkeypatch.setattr(mempalace_mod, "_build_mempalace_tool_bindings", lambda tool_timeout=10.0: {
+        "mempalace_status": lambda: {"ok": True},
+        "mempalace_search": lambda: {"ok": True},
+    })
+    monkeypatch.setattr(MemPalaceMemoryProvider, "_build_wake_up_context", lambda self: setattr(self, "_wake_up_context", "wake"))
 
     provider = MemPalaceMemoryProvider(
         {
@@ -126,7 +154,8 @@ def test_mempalace_provider_uses_host_hooks_for_prefetch_and_sync(monkeypatch, t
     provider.initialize(session_id="sess-1", hermes_home=str(tmp_path), platform="cli")
 
     hooks = _FakeHostHooks.created[-1]
-    assert set(hooks.plugin.bound_tools) == {"mempalace_status"}
+    plugin = hooks.plugin
+    assert set(plugin.bound_tools) == {"mempalace_status", "mempalace_search"}
     assert hooks.resume_calls == [
         {
             "query": "sess-1",
@@ -140,8 +169,18 @@ def test_mempalace_provider_uses_host_hooks_for_prefetch_and_sync(monkeypatch, t
     assert "Session Resume" in rendered
     assert "cached resume hits: 1" in rendered
 
-    rendered_prefetch = provider.prefetch("why did the build fail on startup?", session_id="sess-1")
-    assert rendered_prefetch.startswith("[MemPalace routed evidence]")
+    status = provider.memory_status()
+    assert status == {
+        "memory_backend": "mempalace_first",
+        "builtin_durable_memory": "disabled",
+        "mempalace_tools": "bound",
+        "resume_on_start": "enabled",
+        "resume_status": "succeeded",
+        "legacy_local_overlap": "off",
+    }
+
+    routed = provider.prefetch("why did the build fail on startup?", session_id="sess-1")
+    assert routed.startswith("[MemPalace routed evidence]")
     assert hooks.prefetch_calls == [
         {
             "query": "why did the build fail on startup?",

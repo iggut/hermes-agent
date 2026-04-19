@@ -1281,14 +1281,66 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        self._memory_backend = "local"
+        self._mempalace_mode_active = False
+        self._disable_builtin_durable_memory = False
+        self._mempalace_resume_payload = {}
+        self._mempalace_status = {}
+        self._mempalace_resume_attempted = False
+        self._mempalace_resume_status = "skipped"
+        self._mempalace_resume_error = ""
+
+        class _NoOpMemoryStore:
+            memory_entries: list[str] = []
+            user_entries: list[str] = []
+
+            def load_from_disk(self):
+                return None
+
+            def save_to_disk(self, target: str):
+                return None
+
+            def add(self, target: str, content: str):
+                return {"success": True, "target": target, "entries": [], "usage": "0/0 chars", "entry_count": 0, "message": "Builtin durable memory disabled; no-op."}
+
+            def replace(self, target: str, old_text: str, new_content: str):
+                return {"success": True, "target": target, "entries": [], "usage": "0/0 chars", "entry_count": 0, "message": "Builtin durable memory disabled; no-op."}
+
+            def remove(self, target: str, old_text: str):
+                return {"success": True, "target": target, "entries": [], "usage": "0/0 chars", "entry_count": 0, "message": "Builtin durable memory disabled; no-op."}
+
+            def format_for_system_prompt(self, target: str):
+                return None
+
+        self._noop_memory_store = _NoOpMemoryStore()
         if not skip_memory:
+            from hermes_cli.config import describe_memory_mode as _describe_memory_mode
+            from hermes_cli.config import validate_mempalace_memory_config as _validate_mempalace_memory_config
+
+            _startup_memory_issues = _validate_mempalace_memory_config(_agent_cfg)
+            _startup_memory_errors = [issue for issue in _startup_memory_issues if issue.severity == "error"]
+            if _startup_memory_errors:
+                _message_lines = ["Invalid Hermes memory configuration:"]
+                for _issue in _startup_memory_errors:
+                    _message_lines.append(f"- {_issue.message}")
+                    if _issue.hint:
+                        _message_lines.append(f"  hint: {_issue.hint}")
+                raise RuntimeError("\n".join(_message_lines))
+
             try:
                 mem_config = _agent_cfg.get("memory", {})
-                self._memory_enabled = mem_config.get("memory_enabled", False)
-                self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
+                self._memory_backend = mem_config.get("memory_backend", "local")
+                self._mempalace_mode_active = self._memory_backend == "mempalace_first"
+                self._disable_builtin_durable_memory = bool(
+                    mem_config.get("disable_builtin_durable_memory", False) or self._mempalace_mode_active
+                )
+                self._memory_enabled = bool(mem_config.get("memory_enabled", False)) and not self._disable_builtin_durable_memory
+                self._user_profile_enabled = bool(mem_config.get("user_profile_enabled", False)) and not self._disable_builtin_durable_memory
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
-                if self._memory_enabled or self._user_profile_enabled:
+                if self._disable_builtin_durable_memory:
+                    self._memory_store = self._noop_memory_store
+                elif self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
                     self._memory_store = MemoryStore(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
@@ -1307,6 +1359,9 @@ class AIAgent:
         if not skip_memory:
             try:
                 _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+
+                if self._mempalace_mode_active:
+                    _mem_provider_name = "mempalace"
 
                 # Auto-migrate: if Honcho was actively configured (enabled +
                 # credentials) but memory.provider is not set, activate the
@@ -1338,78 +1393,121 @@ class AIAgent:
                     from plugins.memory import load_memory_provider as _load_mem
                     self._memory_manager = _MemoryManager()
                     _mp = _load_mem(_mem_provider_name)
-                    if _mp and _mp.is_available():
-                        self._memory_manager.add_provider(_mp)
-                    if self._memory_manager.providers:
-                        from hermes_constants import get_hermes_home as _ghh
-                        _init_kwargs = {
-                            "session_id": self.session_id,
-                            "platform": platform or "cli",
-                            "hermes_home": str(_ghh()),
-                            "agent_context": "primary",
-                        }
-                        # Thread session title for memory provider scoping
-                        # (e.g. honcho uses this to derive chat-scoped session keys)
-                        if self._session_db:
-                            try:
-                                _st = self._session_db.get_session_title(self.session_id)
-                                if _st:
-                                    _init_kwargs["session_title"] = _st
-                            except Exception:
-                                pass
-                        # Thread gateway user identity for per-user memory scoping
-                        if self._user_id:
-                            _init_kwargs["user_id"] = self._user_id
-                        # Thread gateway session key for stable per-chat Honcho session isolation
-                        if self._gateway_session_key:
-                            _init_kwargs["gateway_session_key"] = self._gateway_session_key
-                        # Profile identity for per-profile provider scoping
-                        try:
-                            from hermes_cli.profiles import get_active_profile_name
-                            _profile = get_active_profile_name()
-                            _init_kwargs["agent_identity"] = _profile
-                            _init_kwargs["agent_workspace"] = "hermes"
-                        except Exception:
-                            pass
-                        self._memory_manager.initialize_all(**_init_kwargs)
-                        routing_hooks = getattr(_mp, "_routing_hooks", None)
-                        if routing_hooks is not None:
-                            self._mempalace_hooks = routing_hooks
-                            try:
-                                routing_hooks.install_into(self)
-                            except Exception as _hook_err:
-                                logger.debug("MemPalace host hook install skipped: %s", _hook_err)
-                        logger.info("Memory provider '%s' activated", _mem_provider_name)
-                    else:
+                    if not _mp or not _mp.is_available():
+                        if self._mempalace_mode_active:
+                            raise RuntimeError(
+                                "MemPalace-first mode is enabled but the MemPalace memory provider is unavailable."
+                            )
                         logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
                         self._memory_manager = None
+                    else:
+                        self._memory_manager.add_provider(_mp)
+                        if self._memory_manager.providers:
+                            from hermes_constants import get_hermes_home as _ghh
+                            _init_kwargs = {
+                                "session_id": self.session_id,
+                                "platform": platform or "cli",
+                                "hermes_home": str(_ghh()),
+                                "agent_context": "primary",
+                            }
+                            # Thread session title for memory provider scoping
+                            # (e.g. honcho uses this to derive chat-scoped session keys)
+                            if self._session_db:
+                                try:
+                                    _st = self._session_db.get_session_title(self.session_id)
+                                    if _st:
+                                        _init_kwargs["session_title"] = _st
+                                except Exception:
+                                    pass
+                            if self._user_id:
+                                _init_kwargs["user_id"] = self._user_id
+                            if self._gateway_session_key:
+                                _init_kwargs["gateway_session_key"] = self._gateway_session_key
+                            try:
+                                from hermes_cli.profiles import get_active_profile_name
+                                _profile = get_active_profile_name()
+                                _init_kwargs["agent_identity"] = _profile
+                                _init_kwargs["agent_workspace"] = "hermes"
+                            except Exception:
+                                pass
+                            self._memory_manager.initialize_all(**_init_kwargs)
+                            routing_hooks = getattr(_mp, "_routing_hooks", None)
+                            if routing_hooks is not None:
+                                self._mempalace_hooks = routing_hooks
+                                try:
+                                    routing_hooks.install_into(self)
+                                except Exception as _hook_err:
+                                    logger.debug("MemPalace host hook install skipped: %s", _hook_err)
+                                if self._mempalace_mode_active:
+                                    plugin = getattr(routing_hooks, "plugin", None)
+                                    mempalace_adapter = getattr(plugin, "_mempalace", None) if plugin is not None else None
+                                    tooling_ready = bool(getattr(mempalace_adapter, "tooling_ready", lambda: False)())
+                                    if not tooling_ready:
+                                        raise RuntimeError(
+                                            "MemPalace-first mode is enabled but the required MemPalace tool bindings are absent."
+                                        )
+                                    try:
+                                        wake_query = _init_kwargs.get("session_title") or self.session_id or "session wake"
+                                        self._mempalace_resume_payload = routing_hooks.session_wake_or_resume(
+                                            query=str(wake_query),
+                                            active_project=self._agent_workspace if hasattr(self, "_agent_workspace") else None,
+                                            task_hint=self._task_hint if hasattr(self, "_task_hint") else None,
+                                        )
+                                        self._mempalace_resume_attempted = True
+                                        self._mempalace_resume_status = "succeeded"
+                                    except Exception as _resume_err:
+                                        logger.debug("MemPalace session wake/resume failed: %s", _resume_err)
+                                        self._mempalace_resume_payload = {}
+                                        self._mempalace_resume_attempted = True
+                                        self._mempalace_resume_status = "failed-open"
+                                        self._mempalace_resume_error = str(_resume_err)
+                                logger.info("Memory provider '%s' activated", _mem_provider_name)
+                                try:
+                                    _runtime_status = _mp.memory_status() if hasattr(_mp, "memory_status") else {}
+                                    self._mempalace_status = _describe_memory_mode(_agent_cfg, runtime=_runtime_status)
+                                except Exception:
+                                    self._mempalace_status = {}
+                                if not self.quiet_mode and self._mempalace_status:
+                                    _memory_line = " · ".join(
+                                        f"{key}: {self._mempalace_status.get(key, '(unknown)')}"
+                                        for key in (
+                                            "memory_backend",
+                                            "builtin_durable_memory",
+                                            "mempalace_tools",
+                                            "resume_on_start",
+                                            "resume_status",
+                                            "legacy_local_overlap",
+                                        )
+                                    )
+                                    print(f"  🧠 Memory: {_memory_line}")
+                            else:
+                                if self._mempalace_mode_active:
+                                    raise RuntimeError(
+                                        "MemPalace-first mode is enabled but the MemPalace provider could not be loaded."
+                                    )
             except Exception as _mpe:
                 logger.warning("Memory provider plugin init failed: %s", _mpe)
                 self._memory_manager = None
 
-        # Inject memory provider tool schemas into the tool surface.
-        # Skip tools whose names already exist (plugins may register the
-        # same tools via ctx.register_tool(), which lands in self.tools
-        # through get_tool_definitions()).  Duplicate function names cause
-        # 400 errors on providers that enforce unique names (e.g. Xiaomi
-        # MiMo via Nous Portal).
-        if self._memory_manager and self.tools is not None:
-            _existing_tool_names = {
-                t.get("function", {}).get("name")
-                for t in self.tools
-                if isinstance(t, dict)
-            }
-            for _schema in self._memory_manager.get_all_tool_schemas():
-                _tname = _schema.get("name", "")
-                if _tname and _tname in _existing_tool_names:
-                    continue  # already registered via plugin path
-                _wrapped = {"type": "function", "function": _schema}
-                self.tools.append(_wrapped)
-                if _tname:
-                    self.valid_tool_names.add(_tname)
-                    _existing_tool_names.add(_tname)
+            if not self.quiet_mode and not self._mempalace_status:
+                try:
+                    self._mempalace_status = _describe_memory_mode(_agent_cfg, runtime={"resume_status": "skipped"})
+                except Exception:
+                    self._mempalace_status = {}
+                if self._mempalace_status:
+                    _memory_line = " · ".join(
+                        f"{key}: {self._mempalace_status.get(key, '(unknown)')}"
+                        for key in (
+                            "memory_backend",
+                            "builtin_durable_memory",
+                            "mempalace_tools",
+                            "resume_on_start",
+                            "resume_status",
+                            "legacy_local_overlap",
+                        )
+                    )
+                    print(f"  🧠 Memory: {_memory_line}")
 
-        # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
         try:
             skills_config = _agent_cfg.get("skills", {})
@@ -3558,7 +3656,7 @@ class AIAgent:
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
-        if "memory" in self.valid_tool_names:
+        if "memory" in self.valid_tool_names and not self._disable_builtin_durable_memory:
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
@@ -3610,7 +3708,7 @@ class AIAgent:
         if system_message is not None:
             prompt_parts.append(system_message)
 
-        if self._memory_store:
+        if self._memory_store and not self._disable_builtin_durable_memory:
             if self._memory_enabled:
                 mem_block = self._memory_store.format_for_system_prompt("memory")
                 if mem_block:
@@ -7314,6 +7412,8 @@ class AIAgent:
                        None = use config value (flush_min_turns).
                        0 = always flush (used for compression).
         """
+        if self._disable_builtin_durable_memory:
+            return
         if self._memory_flush_min_turns == 0 and min_turns is None:
             return
         if "memory" not in self.valid_tool_names or not self._memory_store:

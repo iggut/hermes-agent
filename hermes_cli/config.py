@@ -662,6 +662,17 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        "memory_backend": "mempalace_first",
+        "mempalace_enabled": True,
+        "mempalace_fail_open": True,
+        "mempalace_resume_on_start": True,
+        "mempalace_recall_on_every_query": True,
+        "mempalace_duplicate_threshold": 0.92,
+        "mempalace_default_wing_strategy": "active_project",
+        "mempalace_default_room_strategy": "fact_type_and_project",
+        "mempalace_include_legacy_local_envelopes": False,
+        "mempalace_fallback_local_write": False,
+        "disable_builtin_durable_memory": True,
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
@@ -1976,6 +1987,189 @@ class ConfigIssue:
     hint: str
 
 
+_MEMPALACE_REQUIRED_TOOL_NAMES = (
+    "mempalace_status",
+    "mempalace_search",
+    "mempalace_add_drawer",
+    "mempalace_check_duplicate",
+    "mempalace_delete_drawer",
+    "mempalace_reconnect",
+    "mempalace_get_taxonomy",
+    "mempalace_list_drawers",
+    "mempalace_list_rooms",
+    "mempalace_list_wings",
+    "mempalace_kg_stats",
+    "mempalace_kg_query",
+)
+_MEMPALACE_WING_STRATEGIES = frozenset({"active_project", "fixed"})
+_MEMPALACE_ROOM_STRATEGIES = frozenset({"fact_type_and_project", "project_only", "fixed_decisions"})
+
+
+def _mempalace_tool_bindings_ready(memory_cfg: Dict[str, Any]) -> tuple[bool, list[str], str]:
+    """Check whether the host can bind the required MemPalace tools."""
+    try:
+        from plugins.memory.mempalace import _build_mempalace_tool_bindings
+
+        bindings = _build_mempalace_tool_bindings(float(memory_cfg.get("mempalace_tool_timeout", 10.0)))
+    except Exception as exc:
+        return False, list(_MEMPALACE_REQUIRED_TOOL_NAMES), str(exc)
+
+    bound_names = set(bindings or {})
+    missing = [name for name in _MEMPALACE_REQUIRED_TOOL_NAMES if name not in bound_names]
+    return not missing, missing, ""
+
+
+def validate_mempalace_memory_config(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
+    """Validate MemPalace-first memory config.
+
+    This is strict only for MemPalace-first mode; legacy/local memory remains
+    unchanged.
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return [ConfigIssue("error", "Could not load config.yaml", "Run 'hermes setup' to create a valid config")]
+
+    memory = config.get("memory") if isinstance(config, dict) else None
+    if not isinstance(memory, dict):
+        return []
+
+    backend = str(memory.get("memory_backend", "local") or "local").strip()
+    if backend != "mempalace_first":
+        return []
+
+    issues: List[ConfigIssue] = []
+
+    if not bool(memory.get("mempalace_enabled", False)):
+        issues.append(ConfigIssue(
+            "error",
+            "memory.memory_backend is 'mempalace_first' but memory.mempalace_enabled is false",
+            "Set memory.mempalace_enabled: true or change memory.memory_backend back to 'local'",
+        ))
+
+    if not bool(memory.get("disable_builtin_durable_memory", False)):
+        issues.append(ConfigIssue(
+            "error",
+            "memory.memory_backend is 'mempalace_first' but memory.disable_builtin_durable_memory is false",
+            "Set memory.disable_builtin_durable_memory: true so Hermes does not dual-write durable memory",
+        ))
+
+    if bool(memory.get("mempalace_fallback_local_write", False)):
+        issues.append(ConfigIssue(
+            "error",
+            "memory.mempalace_fallback_local_write is true in MemPalace-first mode",
+            "Disable memory.mempalace_fallback_local_write; MemPalace-first must not silently fall back to the legacy durable store",
+        ))
+
+    duplicate_threshold = memory.get("mempalace_duplicate_threshold", 0.92)
+    try:
+        dup_value = float(duplicate_threshold)
+    except Exception:
+        issues.append(ConfigIssue(
+            "error",
+            f"memory.mempalace_duplicate_threshold must be numeric (got {duplicate_threshold!r})",
+            "Use a float between 0.0 and 1.0, such as 0.92",
+        ))
+    else:
+        if not 0.0 <= dup_value <= 1.0:
+            issues.append(ConfigIssue(
+                "error",
+                f"memory.mempalace_duplicate_threshold must be between 0.0 and 1.0 (got {dup_value})",
+                "Use a float between 0.0 and 1.0, such as 0.92",
+            ))
+
+    wing_strategy = str(memory.get("mempalace_default_wing_strategy", "active_project") or "").strip()
+    if wing_strategy not in _MEMPALACE_WING_STRATEGIES:
+        issues.append(ConfigIssue(
+            "error",
+            f"memory.mempalace_default_wing_strategy must be one of {sorted(_MEMPALACE_WING_STRATEGIES)} (got {wing_strategy!r})",
+            "Use 'active_project' for normal host-scoped routing or 'fixed' for a fixed wing mapping",
+        ))
+
+    room_strategy = str(memory.get("mempalace_default_room_strategy", "fact_type_and_project") or "").strip()
+    if room_strategy not in _MEMPALACE_ROOM_STRATEGIES:
+        issues.append(ConfigIssue(
+            "error",
+            f"memory.mempalace_default_room_strategy must be one of {sorted(_MEMPALACE_ROOM_STRATEGIES)} (got {room_strategy!r})",
+            "Use 'fact_type_and_project' for the host default mapping or another supported routing strategy",
+        ))
+
+    if bool(memory.get("mempalace_include_legacy_local_envelopes", False)):
+        issues.append(ConfigIssue(
+            "warning",
+            "memory.mempalace_include_legacy_local_envelopes is enabled",
+            "Migration-only overlap: disable this after cutover so MemPalace remains the single durable source of truth",
+        ))
+
+    tools_ok, missing_tools, tool_error = _mempalace_tool_bindings_ready(memory)
+    if not tools_ok:
+        if tool_error:
+            issues.append(ConfigIssue(
+                "error",
+                f"MemPalace tool bindings could not be created: {tool_error}",
+                "Install or expose the MemPalace MCP wrappers before enabling memory_backend: mempalace_first",
+            ))
+        else:
+            issues.append(ConfigIssue(
+                "error",
+                "MemPalace-first mode is missing required tool bindings: " + ", ".join(missing_tools),
+                "Make sure the host can bind the MemPalace MCP callables before starting chat",
+            ))
+
+    return issues
+
+
+def describe_memory_mode(config: Optional[Dict[str, Any]] = None, runtime: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """Return a compact, operator-facing memory status snapshot."""
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            config = {}
+
+    memory = config.get("memory") if isinstance(config, dict) else None
+    if not isinstance(memory, dict):
+        memory = {}
+
+    backend = str(memory.get("memory_backend", "local") or "local").strip() or "local"
+    runtime = runtime or {}
+    runtime_tools = runtime.get("mempalace_tools")
+    runtime_resume_status = runtime.get("resume_status")
+    runtime_resume_attempted = runtime.get("resume_attempted")
+
+    if isinstance(runtime_tools, str):
+        tools_status = runtime_tools
+    elif backend == "mempalace_first":
+        tools_ok, _missing_tools, _error = _mempalace_tool_bindings_ready(memory)
+        tools_status = "bound" if tools_ok else "absent"
+    else:
+        tools_status = "absent"
+
+    builtin_status = "disabled" if bool(memory.get("disable_builtin_durable_memory", False) or backend == "mempalace_first") else "enabled"
+    resume_on_start = "enabled" if bool(memory.get("mempalace_resume_on_start", True)) else "disabled"
+
+    if isinstance(runtime_resume_status, str) and runtime_resume_status:
+        resume_status = runtime_resume_status
+    elif runtime_resume_attempted is True:
+        resume_status = "attempted"
+    elif backend == "mempalace_first" and bool(memory.get("mempalace_resume_on_start", True)):
+        resume_status = "pending"
+    else:
+        resume_status = "skipped"
+
+    legacy_overlap = "on" if bool(memory.get("mempalace_include_legacy_local_envelopes", False)) else "off"
+
+    return {
+        "memory_backend": backend,
+        "builtin_durable_memory": builtin_status,
+        "mempalace_tools": tools_status,
+        "resume_on_start": resume_on_start,
+        "resume_status": resume_status,
+        "legacy_local_overlap": legacy_overlap,
+    }
+
+
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
     """Validate config.yaml structure and return a list of detected issues.
 
@@ -2084,7 +2278,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    base_url: https://...",
         ))
 
-    # ── Root-level keys that look misplaced ──────────────────────────────
+    # ── Root-level keys that look misplaced ───────────────────────────────
     for key in config:
         if key.startswith("_"):
             continue
@@ -2094,6 +2288,8 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                 f"Move '{key}' under the appropriate section",
             ))
+
+    issues.extend(validate_mempalace_memory_config(config))
 
     return issues
 
