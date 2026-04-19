@@ -38,6 +38,26 @@ _MEMPALACE_VENV = os.path.expanduser("~/.openclaw/workspace/mempalace-venv")
 _PALACE_PATH = os.path.expanduser("~/.mempalace/palace")
 
 
+def _ensure_routing_package_on_path() -> None:
+    """Expose the hermes_mempalace_routing checkout to the host import path."""
+    candidates = []
+    env_root = os.environ.get("HERMES_MEMPALACE_ROUTING_ROOT")
+    if env_root:
+        candidates.append(Path(env_root).expanduser())
+    candidates.append(Path.home() / "workspace" / "hermes_mempalace_routing")
+
+    for candidate in candidates:
+        try:
+            if candidate.is_dir():
+                root = str(candidate)
+                if root not in sys.path:
+                    sys.path.insert(0, root)
+                return
+        except Exception:
+            continue
+
+
+_ensure_routing_package_on_path()
 def _default_routing_base_dir(hermes_home: str | None = None) -> Path:
     base = Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes"
     return base / "mempalace-routing"
