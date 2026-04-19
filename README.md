@@ -15,7 +15,14 @@
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
 
-This fork stays aligned with upstream Hermes while adding MemPalace-first durable memory, native Google AI Studio (Gemini) support, smarter inactivity-aware timeouts, and approval buttons for gated actions across supported platforms.
+## Fork Highlights
+
+- **MemPalace-first durable memory** — preserves long-term knowledge in MemPalace while keeping Hermes focused on live context and active work.
+- **Native Google AI Studio (Gemini) support** — direct access to Gemini models through the built-in provider stack.
+- **Smarter inactivity-aware timeouts** — background work is measured by real activity, reducing premature interruptions during long jobs.
+- **Approval buttons for gated actions** — safer command approvals across supported gateways with native platform interaction.
+
+This fork stays aligned with upstream Hermes while extending the experience with the features above.
 
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
