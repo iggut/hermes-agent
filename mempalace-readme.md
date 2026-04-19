@@ -2,6 +2,8 @@
 
 Hermes host-integrated workflows now use MemPalace as the durable memory backend.
 
+This setup is designed to work together with the companion [hermes_mempalace_routing](https://github.com/iggut/hermes_mempalace_routing) repository, which provides the MemPalace-aware routing layer that stores raw artifacts, builds memory envelopes, and injects evidence-backed context into Hermes prompts.
+
 What stays in Hermes:
 - recent live conversation window
 - current tool outputs

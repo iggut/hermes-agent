@@ -21,6 +21,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 - **Native Google AI Studio (Gemini) support** — direct access to Gemini models through the built-in provider stack.
 - **Smarter inactivity-aware timeouts** — background work is measured by real activity, reducing premature interruptions during long jobs.
 - **Approval buttons for gated actions** — safer command approvals across supported gateways with native platform interaction.
+- **Companion MemPalace routing layer** — the fork relies on the [hermes_mempalace_routing](https://github.com/iggut/hermes_mempalace_routing) repository for MemPalace-aware context routing, raw artifact storage, and evidence-backed prompt assembly.
 
 This fork stays aligned with upstream Hermes while extending the experience with the features above.
 
