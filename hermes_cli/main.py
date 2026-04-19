@@ -4624,6 +4624,30 @@ def _update_via_zip(args):
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
 
+    print()
+    print("→ Verifying updated Hermes imports before restart...")
+    import_probe = _run_update_import_safety_probe()
+    if import_probe.returncode != 0:
+        print("✗ Update safety check failed — updated Hermes cannot import cleanly.")
+        stderr = (import_probe.stderr or "").strip()
+        stdout = (import_probe.stdout or "").strip()
+        if stderr:
+            print("  Import probe stderr:")
+            for line in stderr.splitlines()[:12]:
+                print(f"    {line}")
+            if len(stderr.splitlines()) > 12:
+                print("    …")
+        if stdout:
+            print("  Import probe stdout:")
+            for line in stdout.splitlines()[:12]:
+                print(f"    {line}")
+            if len(stdout.splitlines()) > 12:
+                print("    …")
+        _print_update_brick_warning(
+            "The post-update import probe failed; restarting would likely brick Hermes."
+        )
+        sys.exit(1)
+
     # Sync skills
     try:
         from tools.skills_sync import sync_skills
@@ -5072,6 +5096,50 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             "  ℹ Got updates from upstream but couldn't push to fork (no write access?)"
         )
         print("    Your local repo is updated, but your fork on GitHub may be behind.")
+
+
+def _print_update_brick_warning(
+    reason: str,
+    *,
+    origin_url: Optional[str] = None,
+    current_branch: Optional[str] = None,
+    stash_ref: Optional[str] = None,
+) -> None:
+    """Emit a detailed, copy-pastable recovery block when update looks unsafe."""
+    print()
+    print("⚠ Update safety check failed — Hermes has not restarted gateways.")
+    print(f"  Reason: {reason}")
+    if current_branch:
+        print(f"  Active branch: {current_branch}")
+    if origin_url:
+        print(f"  Origin remote: {origin_url}")
+    if stash_ref:
+        print(f"  Local changes preserved in stash: {stash_ref}")
+    print()
+    print("  Recovery / inspection commands:")
+    print("    hermes doctor")
+    print("    hermes status")
+    print("    git status --short")
+    print("    git log --oneline --decorate --graph --max-count=8 --all")
+    if origin_url:
+        print("    git remote -v")
+    print()
+    print("  If the install partially updated, restore the last known-good commit")
+    print("  or re-run hermes update after fixing the underlying issue.")
+
+
+def _run_update_import_safety_probe() -> subprocess.CompletedProcess:
+    """Verify the freshly updated code can still import the core CLI modules."""
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import hermes_cli.main; import hermes_cli.config; import hermes_cli.gateway",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _invalidate_update_cache():
@@ -6072,6 +6140,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _update_via_zip(args)
         else:
             print(f"✗ Update failed: {e}")
+            stderr = (getattr(e, "stderr", "") or "").strip()
+            stdout = (getattr(e, "stdout", "") or "").strip()
+            if stderr:
+                print("  stderr:")
+                for line in stderr.splitlines()[:12]:
+                    print(f"    {line}")
+                if len(stderr.splitlines()) > 12:
+                    print("    …")
+            if stdout:
+                print("  stdout:")
+                for line in stdout.splitlines()[:12]:
+                    print(f"    {line}")
+                if len(stdout.splitlines()) > 12:
+                    print("    …")
+            _print_update_brick_warning(
+                "The update command failed before Hermes could restart or reconfigure."
+            )
             sys.exit(1)
 
 
