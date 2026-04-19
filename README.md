@@ -24,6 +24,8 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 This fork stays aligned with upstream Hermes while extending the experience with the features above.
 
+It is maintained as a practical downstream distribution: upstream-compatible where possible, with fork-specific enhancements added carefully so teams can adopt the improvements without relearning the core Hermes workflow.
+
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
 <tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
