@@ -60,19 +60,31 @@ _MEMPALACE_TOOL_NAMES = (
 
 def _ensure_routing_package_on_path() -> None:
     """Expose the hermes_mempalace_routing checkout to the host import path."""
-    candidates = []
+    candidates: list[Path] = []
     env_root = os.environ.get("HERMES_MEMPALACE_ROUTING_ROOT")
     if env_root:
         candidates.append(Path(env_root).expanduser())
     candidates.append(Path.home() / "workspace" / "hermes_mempalace_routing")
+    # Any ancestor directory may be a workspace root that also contains
+    # ``hermes_mempalace_routing`` (companion clone / symlinked layout).
+    try:
+        here = Path(__file__).resolve()
+        for p in here.parents:
+            cand = p / "hermes_mempalace_routing"
+            if cand not in candidates:
+                candidates.append(cand)
+    except Exception:
+        pass
 
     for candidate in candidates:
         try:
             if candidate.is_dir():
-                root = str(candidate)
-                if root not in sys.path:
-                    sys.path.insert(0, root)
-                return
+                inner = candidate / "hermes_mempalace_routing"
+                if inner.is_dir() and (inner / "__init__.py").is_file():
+                    root = str(candidate)
+                    if root not in sys.path:
+                        sys.path.insert(0, root)
+                    return
         except Exception:
             continue
 
