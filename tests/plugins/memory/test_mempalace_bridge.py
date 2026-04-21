@@ -158,3 +158,35 @@ def test_mempalace_provider_uses_host_hooks_for_prefetch_and_sync(monkeypatch, t
     assert hooks.ingestion_calls[0]["fact_type"] == "stacktrace"
     assert "USER:\nuser stacktrace" in hooks.ingestion_calls[0]["raw_text"]
     assert "ASSISTANT:\nassistant follow-up" in hooks.ingestion_calls[0]["raw_text"]
+
+
+def test_routing_path_resolver_prefers_parent_walk_and_logs_source(monkeypatch, tmp_path: Path, caplog) -> None:
+    plugin_file = (
+        tmp_path
+        / "host"
+        / "plugins"
+        / "memory"
+        / "mempalace"
+        / "__init__.py"
+    )
+    plugin_file.parent.mkdir(parents=True, exist_ok=True)
+    plugin_file.write_text("# test", encoding="utf-8")
+
+    expected_repo = tmp_path / "host" / "hermes_mempalace_routing"
+    package_dir = expected_repo / "hermes_mempalace_routing"
+    package_dir.mkdir(parents=True, exist_ok=True)
+    (package_dir / "__init__.py").write_text("# package", encoding="utf-8")
+
+    monkeypatch.delenv("HERMES_MEMPALACE_ROUTING_ROOT", raising=False)
+    monkeypatch.setattr(mempalace_mod, "__file__", str(plugin_file))
+    monkeypatch.setattr(mempalace_mod.Path, "home", lambda: tmp_path / "no-match-home")
+    monkeypatch.setattr(mempalace_mod.sys, "path", [])
+
+    with caplog.at_level("INFO", logger=mempalace_mod.logger.name):
+        mempalace_mod._ensure_routing_package_on_path()
+
+    assert str(expected_repo) in mempalace_mod.sys.path
+    assert "mempalace_routing_path_resolved" in caplog.text
+    assert f"path={expected_repo}" in caplog.text
+    assert "source=parent_walk" in caplog.text
+    assert "package_root_valid=True" in caplog.text

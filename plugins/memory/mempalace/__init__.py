@@ -61,10 +61,15 @@ _MEMPALACE_TOOL_NAMES = (
 def _ensure_routing_package_on_path() -> None:
     """Expose the hermes_mempalace_routing checkout to the host import path."""
     candidates: list[Path] = []
+    candidate_sources: dict[Path, str] = {}
     env_root = os.environ.get("HERMES_MEMPALACE_ROUTING_ROOT")
     if env_root:
-        candidates.append(Path(env_root).expanduser())
-    candidates.append(Path.home() / "workspace" / "hermes_mempalace_routing")
+        env_candidate = Path(env_root).expanduser()
+        candidates.append(env_candidate)
+        candidate_sources[env_candidate] = "env"
+    fallback_candidate = Path.home() / "workspace" / "hermes_mempalace_routing"
+    candidates.append(fallback_candidate)
+    candidate_sources[fallback_candidate] = "fallback"
     # Any ancestor directory may be a workspace root that also contains
     # ``hermes_mempalace_routing`` (companion clone / symlinked layout).
     try:
@@ -73,20 +78,33 @@ def _ensure_routing_package_on_path() -> None:
             cand = p / "hermes_mempalace_routing"
             if cand not in candidates:
                 candidates.append(cand)
+                candidate_sources[cand] = "parent_walk"
     except Exception:
         pass
 
+    resolved_path: str | None = None
+    resolved_source = "fallback"
+    validated_package_root = False
     for candidate in candidates:
         try:
             if candidate.is_dir():
                 inner = candidate / "hermes_mempalace_routing"
                 if inner.is_dir() and (inner / "__init__.py").is_file():
                     root = str(candidate)
+                    resolved_path = root
+                    resolved_source = candidate_sources.get(candidate, "fallback")
+                    validated_package_root = True
                     if root not in sys.path:
                         sys.path.insert(0, root)
-                    return
+                    break
         except Exception:
             continue
+    logger.info(
+        "mempalace_routing_path_resolved path=%s source=%s package_root_valid=%s",
+        resolved_path or "<none>",
+        resolved_source,
+        validated_package_root,
+    )
 
 
 _ensure_routing_package_on_path()
