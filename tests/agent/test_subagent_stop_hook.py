@@ -54,18 +54,33 @@ def _fresh_plugin_manager():
 
 
 @pytest.fixture(autouse=True)
-def _stub_child_builder(monkeypatch):
-    """Replace _build_child_agent with a MagicMock factory so delegate_task
-    never transitively imports run_agent / openai.  Keeps the test runnable
-    in environments without heavyweight runtime deps installed."""
+def _stub_delegate_prereqs(monkeypatch):
+    """Keep delegate_task isolated from ambient config and heavyweight
+    runtime deps.
+
+    The hook tests only care that subagent_stop fires once and on the parent
+    thread; they should not depend on whatever delegation settings happen to
+    exist in the developer's home config.
+    """
     def _fake_build_child(task_index, **kwargs):
         child = MagicMock()
         child._delegate_saved_tool_names = []
         child._credential_pool = None
         return child
 
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", _fake_build_child)
+    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {"max_iterations": 5})
     monkeypatch.setattr(
-        "tools.delegate_tool._build_child_agent", _fake_build_child,
+        "tools.delegate_tool._resolve_delegation_credentials",
+        lambda cfg, parent_agent: {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "command": None,
+            "args": None,
+        },
     )
 
 
