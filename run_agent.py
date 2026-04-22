@@ -2246,8 +2246,9 @@ class AIAgent:
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
         if old_norm and new_norm and old_norm != new_norm:
+            fallback_chain = getattr(self, "_fallback_chain", [])
             self._fallback_chain = [
-                entry for entry in self._fallback_chain
+                entry for entry in fallback_chain
                 if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
             ]
             self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
@@ -2507,13 +2508,8 @@ class AIAgent:
 
     def _is_direct_openai_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
-        if base_url is not None:
-            hostname = base_url_hostname(base_url)
-        else:
-            hostname = getattr(self, "_base_url_hostname", "") or base_url_hostname(
-                getattr(self, "_base_url_lower", "")
-            )
-        return hostname == "api.openai.com"
+        url = base_url or self._base_url_lower
+        return base_url_host_matches(url, "api.openai.com") and "openrouter" not in (url or "").lower()
 
     def _resolved_api_call_timeout(self) -> float:
         """Resolve the effective per-call request timeout in seconds.

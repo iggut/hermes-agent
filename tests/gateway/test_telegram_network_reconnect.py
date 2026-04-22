@@ -28,7 +28,7 @@ def _ensure_telegram_mock():
     telegram_mod.constants.ChatType.PRIVATE = "private"
 
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
+        sys.modules[name] = telegram_mod
 
 
 _ensure_telegram_mock()

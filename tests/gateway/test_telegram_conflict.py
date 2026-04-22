@@ -28,7 +28,7 @@ def _ensure_telegram_mock():
     telegram_mod.error.BadRequest = type("BadRequest", (Exception,), {})
 
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
+        sys.modules[name] = telegram_mod
     sys.modules.setdefault("telegram.error", telegram_mod.error)
 
 

@@ -62,9 +62,14 @@ def _ensure_discord_mock():
             choices=lambda **kwargs: (lambda fn: fn),
             Choice=lambda **kwargs: SimpleNamespace(**kwargs),
         )
-        discord_mod.opus = SimpleNamespace(is_loaded=lambda: True)
-
-        ext_mod = MagicMock()
+        discord_mod.app_commands = SimpleNamespace(
+            describe=lambda **kwargs: (lambda fn: fn),
+            choices=lambda **kwargs: (lambda fn: fn),
+            autocomplete=lambda **kwargs: (lambda fn: fn),
+            Choice=lambda **kwargs: SimpleNamespace(**kwargs),
+            Group=type("Group", (), {}),
+            Command=type("Command", (), {}),
+        )
         commands_mod = MagicMock()
         commands_mod.Bot = MagicMock
         ext_mod.commands = commands_mod
