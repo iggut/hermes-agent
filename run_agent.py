@@ -1599,66 +1599,6 @@ class AIAgent:
                                     routing_hooks.install_into(self)
                                 except Exception as _hook_err:
                                     logger.debug("MemPalace host hook install skipped: %s", _hook_err)
-                            if self._mempalace_mode_active:
-                                plugin = getattr(routing_hooks, "plugin", None)
-                                mempalace_adapter = getattr(plugin, "_mempalace", None) if plugin is not None else None
-                                tooling_ready = bool(getattr(mempalace_adapter, "tooling_ready", lambda: False)())
-                                if not tooling_ready:
-                                    raise RuntimeError(
-                                        "MemPalace-first mode is enabled but the required MemPalace tool bindings are absent."
-                                    )
-                                try:
-                                    wake_query = _init_kwargs.get("session_title") or self.session_id or "session wake"
-                                    self._mempalace_resume_payload = routing_hooks.session_wake_or_resume(
-                                        query=str(wake_query),
-                                        active_project=self._agent_workspace if hasattr(self, "_agent_workspace") else None,
-                                        task_hint=self._task_hint if hasattr(self, "_task_hint") else None,
-                                    )
-                                    self._mempalace_resume_attempted = True
-                                    self._mempalace_resume_status = "succeeded"
-                                except Exception as _resume_err:
-                                    logger.debug("MemPalace session wake/resume failed: %s", _resume_err)
-                            logger.info("Memory provider '%s' activated", _mem_provider_name)
-                        logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
-                        self._memory_manager = None
-                    else:
-                        self._memory_manager.add_provider(_mp)
-                        if self._memory_manager.providers:
-                            from hermes_constants import get_hermes_home as _ghh
-                            _init_kwargs = {
-                                "session_id": self.session_id,
-                                "platform": platform or "cli",
-                                "hermes_home": str(_ghh()),
-                                "agent_context": "primary",
-                            }
-                            # Thread session title for memory provider scoping
-                            # (e.g. honcho uses this to derive chat-scoped session keys)
-                            if self._session_db:
-                                try:
-                                    _st = self._session_db.get_session_title(self.session_id)
-                                    if _st:
-                                        _init_kwargs["session_title"] = _st
-                                except Exception:
-                                    pass
-                            if self._user_id:
-                                _init_kwargs["user_id"] = self._user_id
-                            if self._gateway_session_key:
-                                _init_kwargs["gateway_session_key"] = self._gateway_session_key
-                            try:
-                                from hermes_cli.profiles import get_active_profile_name
-                                _profile = get_active_profile_name()
-                                _init_kwargs["agent_identity"] = _profile
-                                _init_kwargs["agent_workspace"] = "hermes"
-                            except Exception:
-                                pass
-                            self._memory_manager.initialize_all(**_init_kwargs)
-                            routing_hooks = getattr(_mp, "_routing_hooks", None)
-                            if routing_hooks is not None:
-                                self._mempalace_hooks = routing_hooks
-                                try:
-                                    routing_hooks.install_into(self)
-                                except Exception as _hook_err:
-                                    logger.debug("MemPalace host hook install skipped: %s", _hook_err)
                                 if self._mempalace_mode_active:
                                     plugin = getattr(routing_hooks, "plugin", None)
                                     mempalace_adapter = getattr(plugin, "_mempalace", None) if plugin is not None else None
@@ -1682,30 +1622,31 @@ class AIAgent:
                                         self._mempalace_resume_attempted = True
                                         self._mempalace_resume_status = "failed-open"
                                         self._mempalace_resume_error = str(_resume_err)
-                                logger.info("Memory provider '%s' activated", _mem_provider_name)
-                                try:
-                                    _runtime_status = _mp.memory_status() if hasattr(_mp, "memory_status") else {}
-                                    self._mempalace_status = _describe_memory_mode(_agent_cfg, runtime=_runtime_status)
-                                except Exception:
-                                    self._mempalace_status = {}
-                                if not self.quiet_mode and self._mempalace_status:
-                                    _memory_line = " · ".join(
-                                        f"{key}: {self._mempalace_status.get(key, '(unknown)')}"
-                                        for key in (
-                                            "memory_backend",
-                                            "builtin_durable_memory",
-                                            "mempalace_tools",
-                                            "resume_on_start",
-                                            "resume_status",
-                                            "legacy_local_overlap",
-                                        )
-                                    )
-                                    print(f"  🧠 Memory: {_memory_line}")
                             else:
                                 if self._mempalace_mode_active:
                                     raise RuntimeError(
                                         "MemPalace-first mode is enabled but the MemPalace provider could not be loaded."
                                     )
+
+                            logger.info("Memory provider '%s' activated", _mem_provider_name)
+                            try:
+                                _runtime_status = _mp.memory_status() if hasattr(_mp, "memory_status") else {}
+                                self._mempalace_status = _describe_memory_mode(_agent_cfg, runtime=_runtime_status)
+                            except Exception:
+                                self._mempalace_status = {}
+                            if not self.quiet_mode and self._mempalace_status:
+                                _memory_line = " · ".join(
+                                    f"{key}: {self._mempalace_status.get(key, '(unknown)')}"
+                                    for key in (
+                                        "memory_backend",
+                                        "builtin_durable_memory",
+                                        "mempalace_tools",
+                                        "resume_on_start",
+                                        "resume_status",
+                                        "legacy_local_overlap",
+                                    )
+                                )
+                                print(f"  🧠 Memory: {_memory_line}")
             except Exception as _mpe:
                 logger.warning("Memory provider plugin init failed: %s", _mpe)
                 self._memory_manager = None
