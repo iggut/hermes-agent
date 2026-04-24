@@ -5579,6 +5579,26 @@ class AIAgent:
             self._try_refresh_anthropic_client_credentials()
         return self._anthropic_client.messages.create(**api_kwargs)
 
+    def _rebuild_anthropic_client(self) -> None:
+        """Rebuild the Anthropic client after an interrupt or stale call.
+
+        Handles both direct Anthropic and Bedrock-hosted Anthropic models
+        correctly — rebuilding with the Bedrock SDK when provider is bedrock,
+        rather than always falling back to build_anthropic_client() which
+        requires a direct Anthropic API key.
+        """
+        if getattr(self, "provider", None) == "bedrock":
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
+            self._anthropic_client = build_anthropic_bedrock_client(region)
+        else:
+            from agent.anthropic_adapter import build_anthropic_client
+            self._anthropic_client = build_anthropic_client(
+                self._anthropic_api_key,
+                getattr(self, "_anthropic_base_url", None),
+                timeout=get_provider_request_timeout(self.provider, self.model),
+            )
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -5614,12 +5634,21 @@ class AIAgent:
                     # bedrock responses like chat_completions responses.
                     from agent.bedrock_adapter import (
                         _get_bedrock_runtime_client,
+                        invalidate_runtime_client,
+                        is_stale_connection_error,
                         normalize_converse_response,
                     )
                     region = api_kwargs.pop("__bedrock_region__", "us-east-1")
                     api_kwargs.pop("__bedrock_converse__", None)
                     client = _get_bedrock_runtime_client(region)
-                    raw_response = client.converse(**api_kwargs)
+                    try:
+                        raw_response = client.converse(**api_kwargs)
+                    except Exception as _bedrock_exc:
+                        # Evict the cached client on stale-connection failures
+                        # so the outer retry loop builds a fresh client/pool.
+                        if is_stale_connection_error(_bedrock_exc):
+                            invalidate_runtime_client(region)
+                        raise
                     result["response"] = normalize_converse_response(raw_response)
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
@@ -5677,14 +5706,8 @@ class AIAgent:
                 )
                 try:
                     if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
                         self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                            timeout=get_provider_request_timeout(self.provider, self.model),
-                        )
+                        self._rebuild_anthropic_client()
                     else:
                         rc = request_client_holder.get("client")
                         if rc is not None:
@@ -5709,14 +5732,8 @@ class AIAgent:
                 # seed future retries.
                 try:
                     if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
                         self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                            timeout=get_provider_request_timeout(self.provider, self.model),
-                        )
+                        self._rebuild_anthropic_client()
                     else:
                         request_client = request_client_holder.get("client")
                         if request_client is not None:
@@ -5872,12 +5889,21 @@ class AIAgent:
                 try:
                     from agent.bedrock_adapter import (
                         _get_bedrock_runtime_client,
+                        invalidate_runtime_client,
+                        is_stale_connection_error,
                         stream_converse_with_callbacks,
                     )
                     region = api_kwargs.pop("__bedrock_region__", "us-east-1")
                     api_kwargs.pop("__bedrock_converse__", None)
                     client = _get_bedrock_runtime_client(region)
-                    raw_response = client.converse_stream(**api_kwargs)
+                    try:
+                        raw_response = client.converse_stream(**api_kwargs)
+                    except Exception as _bedrock_exc:
+                        # Evict the cached client on stale-connection failures
+                        # so the outer retry loop builds a fresh client/pool.
+                        if is_stale_connection_error(_bedrock_exc):
+                            invalidate_runtime_client(region)
+                        raise
 
                     def _on_text(text):
                         _fire_first()
@@ -6557,14 +6583,8 @@ class AIAgent:
             if self._interrupt_requested:
                 try:
                     if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
                         self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                            timeout=get_provider_request_timeout(self.provider, self.model),
-                        )
+                        self._rebuild_anthropic_client()
                     else:
                         request_client = request_client_holder.get("client")
                         if request_client is not None:
