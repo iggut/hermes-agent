@@ -1,3 +1,4 @@
+import type { SubscriptionHistoryEntry, SubscriptionRecord, SubscriptionValue } from './domain/subscriptions.js'
 import type { SessionInfo, SlashCategory, Usage } from './types.js'
 
 export interface GatewaySkin {
@@ -89,7 +90,50 @@ export interface SetupStatusResponse {
   provider_configured?: boolean
 }
 
-// ── Session lifecycle ────────────────────────────────────────────────
+// ── Subscriptions / token dashboard ───────────────────────────────────────────
+
+export interface SubscriptionListResponse {
+  subscriptions?: SubscriptionRecord[]
+  warning?: string
+}
+
+export interface SubscriptionHistoryResponse {
+  history?: SubscriptionHistoryEntry[]
+  provider_id: string
+}
+
+export interface SubscriptionSyncResponse {
+  history?: SubscriptionHistoryEntry
+  subscription?: SubscriptionRecord
+}
+
+export interface SubscriptionUpdateRequest {
+  active_source?: 'manual' | 'synced'
+  manual_value?: null | SubscriptionValue
+  notes?: string[]
+  reset_at?: string
+  renewal_at?: string
+  synced_value?: null | SubscriptionValue
+}
+
+export interface SubscriptionUpdateResponse {
+  subscription?: SubscriptionRecord
+}
+
+export interface SubscriptionConnectRequest {
+  connector_kind: 'api-key' | 'browser-import' | 'manual' | 'oauth'
+  provider_id: string
+}
+
+export interface SubscriptionConnectResponse {
+  subscription?: SubscriptionRecord
+}
+
+export interface SubscriptionDisconnectResponse {
+  subscription?: SubscriptionRecord
+}
+
+// ── Session lifecycle ─────────────────────────────────────────────────────────
 
 export interface SessionCreateResponse {
   info?: SessionInfo & { credential_warning?: string }

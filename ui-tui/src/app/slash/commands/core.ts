@@ -13,6 +13,7 @@ import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } fr
 import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
+import { getSubscriptions } from '../../subscriptionStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
@@ -58,7 +59,8 @@ export const coreCommands: SlashCommand[] = [
         {
           rows: [
             ['/details [hidden|collapsed|expanded|cycle]', 'set agent detail visibility mode'],
-            ['/fortune [random|daily]', 'show a random or daily local fortune']
+            ['/fortune [random|daily]', 'show a random or daily local fortune'],
+            ['/subscriptions', 'open the token dashboard']
           ],
           title: 'TUI'
         },
@@ -66,6 +68,21 @@ export const coreCommands: SlashCommand[] = [
       )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)
+    }
+  },
+
+  {
+    aliases: ['tokens'],
+    help: 'open the token dashboard',
+    name: 'subscriptions',
+    run: arg => {
+      const target = arg.trim().toLowerCase()
+      const current = getSubscriptions().find(item => item.providerId === target || item.providerName.toLowerCase() === target)
+
+      patchOverlayState({
+        subscriptions: true,
+        subscriptionsProviderId: current?.providerId ?? null
+      })
     }
   },
 

@@ -66,6 +66,8 @@ export interface OverlayState {
   secret: null | SecretReq
   skillsHub: boolean
   sudo: null | SudoReq
+  subscriptions: boolean
+  subscriptionsProviderId: null | string
 }
 
 export interface PagerState {

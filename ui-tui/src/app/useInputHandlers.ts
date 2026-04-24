@@ -251,6 +251,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.picker) {
         patchOverlayState({ picker: false })
+      } else if (overlay.subscriptions && (key.escape || isCtrl(key, ch, 'c') || ch === 'q')) {
+        patchOverlayState({ subscriptions: false, subscriptionsProviderId: null })
       }
 
       return
@@ -374,6 +376,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isAction(key, ch, 'g')) {
       return cActions.openEditor()
+    }
+
+    if (isAction(key, ch, 't')) {
+      return patchOverlayState({ subscriptions: true, subscriptionsProviderId: null })
     }
 
     // shift-tab flips yolo without spending a turn (claude-code parity)

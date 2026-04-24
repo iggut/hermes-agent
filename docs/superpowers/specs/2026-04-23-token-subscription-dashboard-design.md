@@ -105,7 +105,8 @@ The dashboard should normalize provider data into a common model so the UI can s
 
 - `provider_id`
 - `provider_name`
-- `display_unit` — tokens, messages, requests, credits, or allowance
+- `metric_kind` — tokens, messages, requests, credits, or allowance
+- `display_unit` — human-readable unit label shown in the UI
 - `remaining`
 - `limit`
 - `used`
@@ -130,32 +131,35 @@ Example:
 - `74 / 100 messages remaining`
 - `1.8K credits left`
 
-If a provider does not expose a true token count, the UI should label the metric honestly rather than forcing a fake token conversion.
+If a provider does not expose a true token count, the UI should label the metric honestly rather than forcing a fake token conversion. The canonical model should preserve the provider-native metric kind so the UI can present accurate copy.
 
 ## Hybrid sync behavior
 
 ### Sync precedence
 
 1. Use provider sync if a valid connector exists.
-2. If sync fails or is unavailable, fall back to the last known manual value.
-3. Manual overrides always win visually until the next successful sync.
-4. Keep sync history so the user can see when a manual value replaced a synced value.
+2. If sync fails or is unavailable, keep the last known manual value active.
+3. A successful sync updates the synced record without silently overwriting an active manual override.
+4. The user can explicitly choose "use synced value" or "keep manual value" when both are present.
+5. Keep sync history so the user can see when a manual value replaced a synced value.
 
 ### Conflict handling
 
 If both synced and manual values exist:
 
 - display the current active value prominently
-- show the other value in a secondary line
+- show the alternate value in a secondary line
 - allow the user to choose "use synced value" or "keep manual value"
 
 ### Staleness policy
 
 Mark a subscription as stale when:
 
-- the source has not synced within a configurable threshold
+- the source has not synced within the configured threshold
 - the account token changed or expired
 - the provider returns incomplete data
+
+Default staleness threshold: 24 hours, with provider-specific overrides allowed in config.
 
 ## Provider-specific design notes
 
@@ -230,17 +234,25 @@ Each provider should show:
 
 If a provider does not support a direct connector, the UI should say so plainly and provide the best fallback path.
 
-## Suggested backend/API shape
+### Suggested backend/API shape
 
 A single dashboard API should return a normalized list of subscriptions.
 
 ### Example endpoints
 
 - `GET /api/subscriptions`
+- `GET /api/subscriptions/:id/history`
 - `PUT /api/subscriptions/:id` for manual overrides
 - `POST /api/subscriptions/:id/sync` for one-off refresh
 - `POST /api/subscriptions/:id/connect` for connector setup
 - `DELETE /api/subscriptions/:id/connection` for disconnect
+
+### Security and secret handling
+
+- Store API keys, OAuth tokens, and imported session data separately from the display model.
+- Encrypt persisted secrets at rest.
+- Treat browser-import connectors as explicitly user-approved and revocable.
+- Keep sensitive connector metadata out of logs and public API responses.
 
 ### Example response shape
 
@@ -330,11 +342,12 @@ If sync fails:
 ## Acceptance criteria
 
 1. The dashboard clearly shows remaining allowance for Xiaomi MiMo, ChatGPT Plus, Cursor, and Google AI.
-2. Each provider has an obvious sync status.
-3. Manual override works even when sync is unavailable.
-4. Sync history and staleness are visible.
-5. The page feels visually consistent with the existing Hermes web UI.
-6. Providers without a stable API are still useful through manual tracking.
+2. Each provider has an obvious sync status badge and provenance label.
+3. Manual override persists when sync is unavailable and can be re-applied or replaced explicitly.
+4. Sync history and staleness are visible for every provider.
+5. Providers without a stable API are still useful through manual tracking.
+6. The page feels visually consistent with the existing Hermes web UI.
+7. The UI distinguishes true token balances from usage-limit or allowance-based metrics when providers do not expose a raw token count.
 
 ## Open questions for implementation
 

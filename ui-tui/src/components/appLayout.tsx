@@ -12,6 +12,7 @@ import type { DetailsMode } from '../types.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
+import { SubscriptionsOverlay } from './subscriptionsOverlay.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { MessageLine } from './messageLine.js'
@@ -258,6 +259,17 @@ const AgentsOverlayPane = memo(function AgentsOverlayPane() {
   )
 })
 
+const SubscriptionsOverlayPane = memo(function SubscriptionsOverlayPane() {
+  const ui = useStore($uiState)
+
+  return (
+    <SubscriptionsOverlay
+      onClose={() => patchOverlayState({ subscriptions: false, subscriptionsProviderId: null })}
+      t={ui.theme}
+    />
+  )
+})
+
 const StatusRulePane = memo(function StatusRulePane({
   at,
   composer,
@@ -306,12 +318,14 @@ export const AppLayout = memo(function AppLayout({
         <Box flexDirection="row" flexGrow={1}>
           {overlay.agents ? (
             <AgentsOverlayPane />
+          ) : overlay.subscriptions ? (
+            <SubscriptionsOverlayPane />
           ) : (
             <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
           )}
         </Box>
 
-        {!overlay.agents && (
+        {!overlay.agents && !overlay.subscriptions && (
           <>
             <PromptZone
               cols={composer.cols}
