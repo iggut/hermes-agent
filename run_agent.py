@@ -96,7 +96,6 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
-from agent.headroom import compress_for_model, get_headroom_compressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
@@ -1452,7 +1451,6 @@ class AIAgent:
         # Memory provider plugin (external — one at a time, alongside built-in)
         # Reads memory.provider from config to select which plugin to activate.
         self._memory_manager = None
-        self._mempalace_hooks = None
         if not skip_memory:
             try:
                 _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
@@ -1505,13 +1503,6 @@ class AIAgent:
                         except Exception:
                             pass
                         self._memory_manager.initialize_all(**_init_kwargs)
-                        routing_hooks = getattr(_mp, "_routing_hooks", None)
-                        if routing_hooks is not None:
-                            self._mempalace_hooks = routing_hooks
-                            try:
-                                routing_hooks.install_into(self)
-                            except Exception as _hook_err:
-                                logger.debug("MemPalace host hook install skipped: %s", _hook_err)
                         logger.info("Memory provider '%s' activated", _mem_provider_name)
                     else:
                         logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
@@ -1585,14 +1576,6 @@ class AIAgent:
             except (TypeError, ValueError):
                 _aux_context_config = None
         self._aux_compression_context_length_config = _aux_context_config
-
-        # Headroom: prompt-time compression layer
-        _headroom_cfg = _agent_cfg.get("headroom", {})
-        if not isinstance(_headroom_cfg, dict):
-            _headroom_cfg = {}
-        headroom_enabled = str(_headroom_cfg.get("enabled", False)).lower() in ("true", "1", "yes")
-        headroom_aggressive = _headroom_cfg.get("aggressive_compress", [])
-        headroom_conservative = _headroom_cfg.get("conservative_compress", [])
 
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
@@ -1733,14 +1716,6 @@ class AIAgent:
                 api_mode=self.api_mode,
             )
         self.compression_enabled = compression_enabled
-        
-        # Headroom: prompt-time compression layer (only affects outbound prompts)
-        self.headroom_enabled = headroom_enabled
-        self.headroom_config = {
-            "enabled": headroom_enabled,
-            "aggressive_compress": headroom_aggressive,
-            "conservative_compress": headroom_conservative,
-        }
 
         # Reject models whose context window is below the minimum required
         # for reliable tool-calling workflows (64K tokens).
@@ -6751,68 +6726,6 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
-    def _apply_headroom_compression(self, api_messages: list) -> list:
-        """
-        Apply Headroom prompt-time compression to API messages.
-        
-        Only compresses if Headroom is enabled in configuration.
-        Does not affect memory writes - only outbound model prompts.
-        
-        Args:
-            api_messages: List of messages for the API call
-            
-        Returns:
-            Compressed messages (or original if Headroom disabled/failed)
-        """
-        if not self.headroom_enabled:
-            return api_messages
-        
-        try:
-            from agent.headroom import compress_for_model
-            
-            # Extract system prompt if present
-            system_prompt = ""
-            messages_without_system = []
-            
-            if api_messages and api_messages[0].get("role") == "system":
-                system_prompt = api_messages[0].get("content", "")
-                messages_without_system = api_messages[1:]
-            else:
-                messages_without_system = api_messages
-            
-            # Apply compression
-            compressed_system, compressed_messages, _ = compress_for_model(
-                system_prompt=system_prompt,
-                messages=messages_without_system,
-                tool_results=None,
-                config=self.headroom_config,
-                preserve_raw_memory=True,  # Always preserve memory content
-            )
-            
-            # Reconstruct API messages
-            result = []
-            if compressed_system:
-                result.append({"role": "system", "content": compressed_system})
-            result.extend(compressed_messages)
-            
-            # Log compression stats if debug logging is enabled
-            if logger.isEnabledFor(logging.DEBUG):
-                compressor = get_headroom_compressor(self.headroom_config)
-                stats = compressor.get_last_stats()
-                if stats:
-                    logger.debug(
-                        f"Headroom compression applied: {stats.get('original_size', 0)} → "
-                        f"{stats.get('compressed_size', 0)} chars "
-                        f"({stats.get('ratio', 1.0):.1%} of original)"
-                    )
-            
-            return result
-            
-        except Exception as e:
-            # Fail safe - return original messages
-            logger.warning(f"Headroom compression failed, using original messages: {e}")
-            return api_messages
-
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
@@ -9257,8 +9170,6 @@ class AIAgent:
 
                 try:
                     self._reset_stream_delivery_tracking()
-                    # Apply Headroom compression before building API kwargs
-                    api_messages = self._apply_headroom_compression(api_messages)
                     api_kwargs = self._build_api_kwargs(api_messages)
                     if self._force_ascii_payload:
                         _sanitize_structure_non_ascii(api_kwargs)
@@ -12139,15 +12050,4 @@ def main(
 
 
 if __name__ == "__main__":
-    """Main entry point for Hermes Agent CLI."""
-    
-    # Load hybrid compressor configuration
-    from utils import env_var_enabled
-    
-    hybrid_enabled = env_var_enabled('HERMES_ENABLE_HYBRID_COMPRESSOR')
-    if hybrid_enabled:
-        logger.info("[HYBRID COMPRESSOR] Enabled via HERMES_ENABLE_HYBRID_COMPRESSOR environment variable")
-    
-    # Import and initialize AIAgent as normal (rest of main block)
-
     fire.Fire(main)
