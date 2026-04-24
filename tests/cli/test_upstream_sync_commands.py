@@ -25,6 +25,65 @@ class TestUpstreamSyncSlashCommands:
         assert upa is not None and upa.name == "upa" and upa.cli_only is True
         assert upw is not None and upw.name == "upw" and upw.cli_only is True
 
+    def test_upa_sync_pushes_restored_local_changes(self, tmp_path):
+        from cli import HermesCLI
+
+        origin_bare = tmp_path / "origin.git"
+        upstream_bare = tmp_path / "upstream.git"
+        seed_repo = tmp_path / "seed"
+        work_repo = tmp_path / "hermes-agent"
+        upstream_work = tmp_path / "upstream-work"
+
+        _git(tmp_path, "init", "--bare", origin_bare.name)
+        _git(tmp_path, "init", "--bare", upstream_bare.name)
+
+        seed_repo.mkdir()
+        _git(seed_repo, "init", "-b", "main")
+        _git(seed_repo, "config", "user.name", "Hermes Test")
+        _git(seed_repo, "config", "user.email", "hermes@example.com")
+        (seed_repo / "base.txt").write_text("base\n", encoding="utf-8")
+        _git(seed_repo, "add", "base.txt")
+        _git(seed_repo, "commit", "-m", "base commit")
+        _git(seed_repo, "remote", "add", "origin", str(origin_bare))
+        _git(seed_repo, "remote", "add", "upstream", str(upstream_bare))
+        _git(seed_repo, "push", "origin", "main")
+        _git(seed_repo, "push", "upstream", "main")
+
+        _git(tmp_path, "clone", "-b", "main", str(origin_bare), work_repo.name)
+        _git(work_repo, "config", "user.name", "Hermes Test")
+        _git(work_repo, "config", "user.email", "hermes@example.com")
+        _git(work_repo, "remote", "add", "upstream", str(upstream_bare))
+
+        _git(tmp_path, "clone", "-b", "main", str(upstream_bare), upstream_work.name)
+        _git(upstream_work, "config", "user.name", "Hermes Test")
+        _git(upstream_work, "config", "user.email", "hermes@example.com")
+        (upstream_work / "upstream.txt").write_text("upstream\n", encoding="utf-8")
+        _git(upstream_work, "add", "upstream.txt")
+        _git(upstream_work, "commit", "-m", "upstream change")
+        _git(upstream_work, "push", "origin", "main")
+
+        (work_repo / "local.txt").write_text("local\n", encoding="utf-8")
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.model = "default-model"
+        cli.api_key = None
+        cli.base_url = None
+        cli.provider = None
+        cli.api_mode = None
+        cli.acp_command = None
+        cli.acp_args = []
+        cli.console = MagicMock()
+        cli._console_print = MagicMock()
+
+        cli._handle_upstream_sync_command("upa")
+
+        assert _git(work_repo, "status", "--porcelain").stdout.strip() == ""
+        assert (work_repo / "upstream.txt").read_text(encoding="utf-8") == "upstream\n"
+        assert _git(work_repo, "show", "origin/main:local.txt").stdout == "local\n"
+        assert "Preserve local changes after upstream sync" in _git(
+            work_repo, "log", "--format=%s", "-n", "1", "origin/main"
+        ).stdout
+
     def test_upa_sync_uses_default_model_to_resolve_merge_conflicts(self, tmp_path, monkeypatch):
         from cli import HermesCLI
         import cli as cli_module

@@ -6004,8 +6004,31 @@ class HermesCLI:
             raise RuntimeError(add_proc.stderr.strip() or add_proc.stdout.strip() or "git add failed")
         return True
 
+    def _push_restored_local_changes(self, repo_path: Path, branch_name: str, repo_label: str) -> bool:
+        """Commit and push restored local changes after an upstream sync."""
+        status_proc = self._git_run(repo_path, "status", "--porcelain")
+        if not status_proc.stdout.strip():
+            return False
+
+        add_proc = self._git_run(repo_path, "add", "--all")
+        if add_proc.returncode != 0:
+            raise RuntimeError(add_proc.stderr.strip() or add_proc.stdout.strip() or "git add failed")
+
+        commit_msg = f"Preserve local changes after upstream sync for {repo_label}"
+        commit_proc = self._git_run(repo_path, "commit", "-m", commit_msg)
+        if commit_proc.returncode != 0:
+            combined_output = f"{commit_proc.stdout}\n{commit_proc.stderr}".lower()
+            if "nothing to commit" in combined_output:
+                return False
+            raise RuntimeError(commit_proc.stderr.strip() or commit_proc.stdout.strip() or "git commit failed")
+
+        push_proc = self._git_run(repo_path, "push", "origin", branch_name)
+        if push_proc.returncode != 0:
+            raise RuntimeError(push_proc.stderr.strip() or push_proc.stdout.strip() or "git push origin failed")
+        return True
+
     def _sync_upstream_repo(self, repo_path: Path, repo_label: str) -> str:
-        """Sync the current branch with upstream/main and push the fork."""
+        """Sync the current branch with upstream/main and push the fork, including restored local changes."""
         if not repo_path.exists():
             raise FileNotFoundError(f"{repo_label} repository not found: {repo_path}")
         if not (repo_path / ".git").exists():
@@ -6080,6 +6103,9 @@ class HermesCLI:
                     )
                 else:
                     raise RuntimeError(pop_proc.stderr.strip() or pop_proc.stdout.strip() or "git stash pop failed")
+
+            if self._push_restored_local_changes(repo_path, branch_name, repo_label):
+                self._console_print(f"  Pushed restored local changes to origin/{branch_name}")
 
         return branch_name
 
