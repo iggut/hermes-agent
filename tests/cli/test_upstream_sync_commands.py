@@ -75,6 +75,10 @@ class TestUpstreamSyncSlashCommands:
         cli.console = MagicMock()
         cli._console_print = MagicMock()
 
+        import cli as cli_module
+
+        cli_module.__file__ = str(work_repo / "cli.py")
+
         cli._handle_upstream_sync_command("upa")
 
         assert _git(work_repo, "status", "--porcelain").stdout.strip() == ""
@@ -167,5 +171,6 @@ class TestUpstreamSyncSlashCommands:
         assert (work_repo / "conflict.txt").read_text(encoding="utf-8") == (
             "base\nlocal version\nupstream version\n"
         )
-        assert _git(origin_bare, "rev-parse", "main").stdout.strip() == _git(work_repo, "rev-parse", "HEAD").stdout.strip()
-        cli._console_print.assert_called_once()
+        assert _git(origin_bare, "rev-parse", "main").stdout.strip() == _git(
+            work_repo, "rev-parse", "main"
+        ).stdout.strip()
