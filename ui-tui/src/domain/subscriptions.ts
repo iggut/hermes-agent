@@ -301,6 +301,52 @@ export function disconnectSubscription(record: SubscriptionRecord, now = Date.no
   )
 }
 
+export function setSubscriptionActiveSource(
+  record: SubscriptionRecord,
+  activeSource: SubscriptionActiveSource,
+  now = Date.now()
+): SubscriptionRecord {
+  if (activeSource === 'synced' && !record.syncedValue) {
+    return record
+  }
+
+  if (activeSource === 'manual' && !record.manualValue) {
+    return record
+  }
+
+  return normalizeSubscription(
+    {
+      ...record,
+      activeSource
+    },
+    now
+  )
+}
+
+export function hasSubscriptionValueConflict(record: SubscriptionRecord): boolean {
+  if (!record.manualValue || !record.syncedValue) {
+    return false
+  }
+
+  return !valuesMatch(record.manualValue, record.syncedValue)
+}
+
+function valuesMatch(left: SubscriptionValue, right: SubscriptionValue): boolean {
+  return (
+    left.confidence === right.confidence &&
+    left.displayUnit === right.displayUnit &&
+    left.limit === right.limit &&
+    left.lastError === right.lastError &&
+    left.metricKind === right.metricKind &&
+    left.remaining === right.remaining &&
+    left.sourceType === right.sourceType &&
+    left.sourceUpdatedAt === right.sourceUpdatedAt &&
+    left.used === right.used &&
+    left.notes.length === right.notes.length &&
+    left.notes.every((note, index) => note === right.notes[index])
+  )
+}
+
 function deriveStatus(
   activeSource: SubscriptionActiveSource,
   connection: SubscriptionConnectionSummary,

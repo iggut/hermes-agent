@@ -1,6 +1,6 @@
+import { type ProviderConnectorGuide, type ProviderId, providerSubscriptionAdapters } from './subscriptionAdapters.js'
 import type { SourceType, SubscriptionRecord, SubscriptionSummary } from './subscriptions.js'
 import { normalizeSubscription, summarizeSubscriptions } from './subscriptions.js'
-import { providerSubscriptionAdapters, type ProviderConnectorGuide, type ProviderId } from './subscriptionAdapters.js'
 
 export interface SubscriptionDashboardCard {
   connectorGuides: ProviderConnectorGuide[]

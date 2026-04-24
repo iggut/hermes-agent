@@ -2,10 +2,24 @@ import { Box, NoSelect, ScrollBox, Text, useInput, useStdout } from '@hermes/ink
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
+import { useGateway } from '../app/gatewayContext.js'
 import { $overlayState } from '../app/overlayStore.js'
-import { $subscriptionHistory, $subscriptions, applyManualOverride, disconnectSubscriptionRecord, upsertSubscription } from '../app/subscriptionStore.js'
+import {
+  hydrateSubscriptionDashboard,
+  persistSubscriptionDisconnect,
+  persistSubscriptionSync,
+  persistSubscriptionUpdate
+} from '../app/subscriptionApi.js'
+import {
+  $subscriptionHistory,
+  $subscriptions,
+  applyActiveSourceSelection,
+  applyManualOverride,
+  disconnectSubscriptionRecord,
+  upsertSubscription
+} from '../app/subscriptionStore.js'
 import { buildSubscriptionDashboardModel } from '../domain/subscriptionDashboard.js'
-import { resolveActiveValue, type SubscriptionValue } from '../domain/subscriptions.js'
+import { hasSubscriptionValueConflict, isStale, resolveActiveValue, type SubscriptionValue } from '../domain/subscriptions.js'
 import type { Theme } from '../theme.js'
 
 import { FloatBox } from './appChrome.js'
@@ -23,27 +37,20 @@ const statusTone: Record<string, 'cyan' | 'green' | 'magenta' | 'red' | 'yellow'
   synced: 'green'
 }
 
+const statusText: Record<string, string> = {
+  disconnected: 'Disconnected',
+  error: 'Error',
+  manual: 'Manual',
+  stale: 'Stale',
+  synced: 'Synced'
+}
+
 const sourceLabel: Record<string, string> = {
   manual: 'manual',
   synced: 'synced'
 }
 
-const statusText = (status: string) => {
-  switch (status) {
-    case 'disconnected':
-      return 'Disconnected'
-    case 'error':
-      return 'Error'
-    case 'manual':
-      return 'Manual'
-    case 'stale':
-      return 'Stale'
-    case 'synced':
-      return 'Synced'
-    default:
-      return status
-  }
-}
+const statusTextFor = (status: string) => statusText[status] ?? status
 
 const formatMaybeTime = (value?: number | null) => {
   if (!value) {
@@ -80,6 +87,7 @@ function clampIndex(index: number, total: number) {
 }
 
 export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) {
+  const { rpc } = useGateway()
   const overlay = useStore($overlayState)
   const subscriptions = useStore($subscriptions)
   const history = useStore($subscriptionHistory)
@@ -106,6 +114,14 @@ export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) 
     setSelectedIndex(idx => clampIndex(idx, model.cards.length))
   }, [model.cards, overlay.subscriptionsProviderId])
 
+  useEffect(() => {
+    if (!overlay.subscriptions) {
+      return
+    }
+
+    void hydrateSubscriptionDashboard(rpc)
+  }, [overlay.subscriptions, rpc])
+
   const selected = model.cards[clampIndex(selectedIndex, model.cards.length)]
   const selectedHistory = selected ? history[selected.providerId] ?? [] : []
   const cardWidth = Math.max(28, Math.min(38, Math.floor((width - LIST_WIDTH - 4) / 2)))
@@ -129,18 +145,21 @@ export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) 
 
     if (key.escape || ch === 'q') {
       onClose()
+
       return
     }
 
     if (key.upArrow || ch === 'k') {
       setSelectedIndex(idx => clampIndex(idx - 1, model.cards.length))
       setMessage('')
+
       return
     }
 
     if (key.downArrow || ch === 'j') {
       setSelectedIndex(idx => clampIndex(idx + 1, model.cards.length))
       setMessage('')
+
       return
     }
 
@@ -148,12 +167,58 @@ export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) 
       setEditing(true)
       setEditValue(selected?.record.manualValue?.remaining?.toString() ?? selected?.record.syncedValue?.remaining?.toString() ?? '')
       setMessage(`editing ${selected?.providerName ?? 'subscription'}`)
+
+      return
+    }
+
+    if (ch === 'u' && selected?.record.syncedValue) {
+      applyActiveSourceSelection(selected.providerId, 'synced')
+      void persistSubscriptionUpdate(rpc, {
+        active_source: 'synced',
+        manual_value: selected.record.manualValue,
+        notes: [...selected.record.notes, 'Selected synced value from dashboard'],
+        provider_id: selected.providerId,
+        synced_value: selected.record.syncedValue,
+        renewal_at: selected.record.renewalAt,
+        reset_at: selected.record.resetAt
+      })
+      setMessage(`using synced value for ${selected.providerName}`)
+
+      return
+    }
+
+    if (ch === 'm' && selected?.record.manualValue) {
+      applyActiveSourceSelection(selected.providerId, 'manual')
+      void persistSubscriptionUpdate(rpc, {
+        active_source: 'manual',
+        manual_value: selected.record.manualValue,
+        notes: [...selected.record.notes, 'Kept manual value from dashboard'],
+        provider_id: selected.providerId,
+        synced_value: selected.record.syncedValue,
+        renewal_at: selected.record.renewalAt,
+        reset_at: selected.record.resetAt
+      })
+      setMessage(`keeping manual value for ${selected.providerName}`)
+
+      return
+    }
+
+    if (ch === 'y' && selected) {
+      void persistSubscriptionSync(rpc, {
+        provider_id: selected.providerId,
+        synced_value: selected.record.syncedValue,
+        last_error: selected.record.lastError ?? undefined
+      })
+      setMessage(`refreshed ${selected.providerName}`)
+
       return
     }
 
     if (ch === 'd' && selected) {
       disconnectSubscriptionRecord(selected.providerId)
+      void persistSubscriptionDisconnect(rpc, { provider_id: selected.providerId })
       setMessage(`disconnected ${selected.providerName}`)
+
       return
     }
 
@@ -172,11 +237,13 @@ export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) 
 
     if (!Number.isFinite(next)) {
       setMessage('enter a numeric remaining value')
+
       return
     }
 
     const source = selected.record.activeSource
     const current = selected.record.manualValue ?? selected.record.syncedValue
+
     const manualValue: SubscriptionValue = {
       confidence: current?.confidence ?? selected.record.confidence,
       displayUnit: selected.record.displayUnit,
@@ -218,6 +285,15 @@ export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) 
       })
 
     }
+
+    void persistSubscriptionUpdate(rpc, {
+      active_source: 'manual',
+      manual_value: manualValue,
+      notes: [...selected.record.notes, 'Manual override from dashboard'],
+      provider_id: selected.providerId,
+      renewal_at: selected.record.renewalAt,
+      reset_at: selected.record.resetAt
+    })
     setEditing(false)
     setEditValue('')
     setMessage(`${selected.providerName} updated`)
@@ -238,7 +314,7 @@ export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) 
               Subscription dashboard
             </Text>
             <Text color={t.color.dim}>
-              Esc/q close · ↑/↓ select · Enter/e edit manual value · d disconnect
+              Esc/q close · ↑/↓ select · Enter/e edit manual value · u use synced · m keep manual · y refresh · d disconnect
             </Text>
           </Box>
 
@@ -261,12 +337,12 @@ export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) 
               </Text>
             </Box>
 
-            <Box flexDirection="column" width={34} paddingLeft={2}>
+            <Box flexDirection="column" paddingLeft={2} width={34}>
               <Text bold color={t.color.label}>
                 Selection
               </Text>
               <Text color={selected ? t.color.cornsilk : t.color.dim}>{selected?.providerName ?? '—'}</Text>
-              <Text color={selected ? t.color.dim : t.color.dim}>{selected ? statusText(selected.record.status) : '—'}</Text>
+              <Text color={selected ? t.color.dim : t.color.dim}>{selected ? statusTextFor(selected.record.status) : '—'}</Text>
               <Text color={t.color.dim}>
                 {selected ? formatValue(resolveActiveValue(selected.record)) : '—'}
               </Text>
@@ -274,14 +350,14 @@ export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) 
           </Box>
 
           <Box flexDirection="row">
-            <ScrollBox flexDirection="column" width={LIST_WIDTH} height={18}>
+            <ScrollBox flexDirection="column" height={18} width={LIST_WIDTH}>
               {model.cards.map((card, index) => {
                 const active = index === selectedIndex
 
                 return (
                   <Box
-                    borderStyle={active ? 'double' : 'single'}
                     borderColor={active ? t.color.bronze : t.color.dim}
+                    borderStyle={active ? 'double' : 'single'}
                     flexDirection="column"
                     key={card.providerId}
                     marginBottom={1}
@@ -293,7 +369,7 @@ export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) 
                       {active ? '▶ ' : '  '}{card.providerName}
                     </Text>
                     <Text color={statusTone[card.record.status] ?? t.color.cornsilk}>
-                      {statusText(card.record.status)} · {formatValue(resolveActiveValue(card.record))}
+                      {statusTextFor(card.record.status)} · {formatValue(resolveActiveValue(card.record))}
                     </Text>
                     <Text color={t.color.dim}>
                       {sourceLabel[card.record.activeSource] ?? card.record.activeSource} · {card.record.connection.connected ? 'connected' : 'disconnected'}
@@ -306,28 +382,42 @@ export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) 
               })}
             </ScrollBox>
 
-            <Box flexDirection="column" width={detailWidth} paddingLeft={2}>
+            <Box flexDirection="column" paddingLeft={2} width={detailWidth}>
               <Text bold color={t.color.label}>
                 Details
               </Text>
 
               {selected ? (
                 <>
-                  <Text color={t.color.cornsilk} bold>
+                  <Text bold color={t.color.cornsilk}>
                     {selected.providerName}
                   </Text>
                   <Text>
-                    Status: <Text color={statusTone[selected.record.status] ?? t.color.cornsilk}>{statusText(selected.record.status)}</Text>
+                    Status: <Text color={statusTone[selected.record.status] ?? t.color.cornsilk}>{statusTextFor(selected.record.status)}</Text>
                   </Text>
                   <Text>
                     Unit: <Text color={t.color.cornsilk}>{selected.record.displayUnit}</Text> · Metric: <Text color={t.color.cornsilk}>{selected.record.metricKind}</Text>
                   </Text>
-                  <Text>
-                    Active: <Text color={t.color.cornsilk}>{formatValue(selected.record.activeSource === 'manual' ? selected.record.manualValue : selected.record.syncedValue)}</Text>
-                  </Text>
-                  <Text>
-                    Sync confidence: <Text color={t.color.cornsilk}>{selected.record.confidence}</Text>
-                  </Text>
+                    <Text>
+                      Active: <Text color={t.color.cornsilk}>{formatValue(resolveActiveValue(selected.record))}</Text>
+                    </Text>
+                    <Text>
+                      Manual: <Text color={t.color.cornsilk}>{formatValue(selected.record.manualValue)}</Text>
+                    </Text>
+                    <Text>
+                      Synced: <Text color={t.color.cornsilk}>{formatValue(selected.record.syncedValue)}</Text>
+                    </Text>
+                    {hasSubscriptionValueConflict(selected.record) ? (
+                      <Text color={t.color.warn}>
+                        Manual and synced values differ; press `m` to keep manual or `u` to use synced.
+                      </Text>
+                    ) : null}
+                    <Text>
+                      Freshness: <Text color={isStale(selected.record) ? t.color.warn : t.color.ok}>{isStale(selected.record) ? 'stale' : 'fresh'}</Text>
+                    </Text>
+                    <Text>
+                      Sync confidence: <Text color={t.color.cornsilk}>{selected.record.confidence}</Text>
+                    </Text>
                   <Text>
                     Source updated: <Text color={t.color.cornsilk}>{formatMaybeTime(selected.record.sourceUpdatedAt)}</Text>
                   </Text>
@@ -341,18 +431,41 @@ export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) 
                     Latest note: <Text color={t.color.cornsilk}>{selected.record.notes[0] ?? '—'}</Text>
                   </Text>
 
-                  <Box marginTop={1} flexDirection="column">
+                  <Box flexDirection="column" marginTop={1}>
                     <Text bold color={t.color.label}>
                       Connection guidance
                     </Text>
-                    {selected.connectorGuides.slice(0, 3).map(guide => (
-                      <Text key={`${selected.providerId}:${guide.title}`} color={t.color.dim} wrap="truncate-end">
-                        • {guide.title} ({guide.connectorKind})
-                      </Text>
-                    ))}
+                    {selected.connectorGuides.length ? (
+                      selected.connectorGuides.map(guide => (
+                        <Box
+                          borderColor={guide.connectorKind === 'manual' ? t.color.dim : t.color.bronze}
+                          borderStyle="single"
+                          flexDirection="column"
+                          key={`${selected.providerId}:${guide.title}`}
+                          marginTop={1}
+                          paddingX={1}
+                          paddingY={0}
+                        >
+                          <Text bold color={guide.connectorKind === 'manual' ? t.color.label : t.color.cornsilk} wrap="truncate-end">
+                            {guide.title}
+                          </Text>
+                          <Text color={t.color.dim} wrap="truncate-end">
+                            {guide.exampleState}
+                          </Text>
+                          <Text color={t.color.dim} wrap="truncate-end">
+                            Credentials: {guide.requiredCredentials.length ? guide.requiredCredentials.join(', ') : 'none'}
+                          </Text>
+                          <Text color={t.color.dim} wrap="truncate-end">
+                            Notes: {guide.setupNotes.join(' · ')}
+                          </Text>
+                        </Box>
+                      ))
+                    ) : (
+                      <Text color={t.color.dim}>Manual tracking only; keep a local estimate until a connector is available.</Text>
+                    )}
                   </Box>
 
-                  <Box marginTop={1} flexDirection="column">
+                  <Box flexDirection="column" marginTop={1}>
                     <Text bold color={t.color.label}>
                       History
                     </Text>
@@ -361,15 +474,15 @@ export function SubscriptionsOverlay({ onClose, t }: SubscriptionsOverlayProps) 
                     </Text>
                   </Box>
 
-                  <Box marginTop={1} flexDirection="column">
+                  <Box flexDirection="column" marginTop={1}>
                     <Text bold color={t.color.label}>
                       Connectivity
                     </Text>
                     <Text color={t.color.dim}>
-                      Sync: {selected.syncAvailable ? 'available' : 'manual only'} · Manual fallback: {selected.manualFallback ? 'yes' : 'no'}
+                      {selected.syncAvailable ? 'Sync is available for this provider.' : 'No stable sync connector yet; use manual tracking.'}
                     </Text>
                     <Text color={t.color.dim}>
-                      Supported: {selected.supportedConnectorKinds.join(', ')}
+                      Supported: {selected.supportedConnectorKinds.join(', ')} · Manual fallback: {selected.manualFallback ? 'yes' : 'no'}
                     </Text>
                   </Box>
                 </>

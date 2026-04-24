@@ -98,9 +98,19 @@ export interface SubscriptionListResponse {
   warning?: string
 }
 
+export interface SubscriptionHistoryRequest {
+  provider_id: string
+}
+
 export interface SubscriptionHistoryResponse {
   history?: SubscriptionHistoryEntry[]
   provider_id: string
+}
+
+export interface SubscriptionSyncRequest {
+  last_error?: string
+  provider_id: string
+  synced_value?: null | SubscriptionValue
 }
 
 export interface SubscriptionSyncResponse {
@@ -112,6 +122,7 @@ export interface SubscriptionUpdateRequest {
   active_source?: 'manual' | 'synced'
   manual_value?: null | SubscriptionValue
   notes?: string[]
+  provider_id: string
   reset_at?: string
   renewal_at?: string
   synced_value?: null | SubscriptionValue
@@ -123,11 +134,16 @@ export interface SubscriptionUpdateResponse {
 
 export interface SubscriptionConnectRequest {
   connector_kind: 'api-key' | 'browser-import' | 'manual' | 'oauth'
+  label?: string
   provider_id: string
 }
 
 export interface SubscriptionConnectResponse {
   subscription?: SubscriptionRecord
+}
+
+export interface SubscriptionDisconnectRequest {
+  provider_id: string
 }
 
 export interface SubscriptionDisconnectResponse {

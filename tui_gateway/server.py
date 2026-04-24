@@ -100,6 +100,14 @@ except Exception:
     pass
 
 from tui_gateway.render import make_stream_renderer, render_diff, render_message
+from tui_gateway.subscriptions import (
+    connect_subscription,
+    disconnect_subscription,
+    list_history as list_subscription_history,
+    list_subscriptions,
+    sync_subscription,
+    upsert_subscription,
+)
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
@@ -1815,7 +1823,111 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "interrupted"})
 
 
-# ── Delegation: subagent tree observability + controls ───────────────
+# ── Subscriptions: dashboard persistence + local API foundation ───────────────
+# Backing store for the TUI's /subscriptions dashboard. The UI can hydrate from
+# these RPCs on open and persist manual edits or connector changes without
+# needing a browser session or a live provider connector.
+
+
+def _subscription_provider_id(params: dict) -> str:
+    return str(params.get("provider_id") or params.get("providerId") or "").strip()
+
+
+def _subscription_updates(params: dict) -> dict:
+    updates: dict = {}
+    if "active_source" in params:
+        updates["activeSource"] = params.get("active_source")
+    if "manual_value" in params:
+        updates["manualValue"] = params.get("manual_value")
+    if "synced_value" in params:
+        updates["syncedValue"] = params.get("synced_value")
+    if "notes" in params:
+        updates["notes"] = params.get("notes")
+    if "renewal_at" in params:
+        updates["renewalAt"] = params.get("renewal_at")
+    if "reset_at" in params:
+        updates["resetAt"] = params.get("reset_at")
+    if "display_unit" in params:
+        updates["displayUnit"] = params.get("display_unit")
+    if "metric_kind" in params:
+        updates["metricKind"] = params.get("metric_kind")
+    if "confidence" in params:
+        updates["confidence"] = params.get("confidence")
+    if "last_error" in params:
+        updates["lastError"] = params.get("last_error")
+    if "source_updated_at" in params:
+        updates["sourceUpdatedAt"] = params.get("source_updated_at")
+    if "stale_after_ms" in params:
+        updates["staleAfterMs"] = params.get("stale_after_ms")
+    if "provider_name" in params:
+        updates["providerName"] = params.get("provider_name")
+    if "connection" in params:
+        updates["connection"] = params.get("connection")
+    return updates
+
+
+@method("subscriptions.list")
+def _(rid, params: dict) -> dict:
+    return _ok(rid, {"subscriptions": list_subscriptions()})
+
+
+@method("subscriptions.history")
+def _(rid, params: dict) -> dict:
+    provider_id = _subscription_provider_id(params)
+    if not provider_id:
+        return _err(rid, 4000, "provider_id required")
+    return _ok(rid, {"provider_id": provider_id, "history": list_subscription_history(provider_id)})
+
+
+@method("subscriptions.update")
+def _(rid, params: dict) -> dict:
+    provider_id = _subscription_provider_id(params)
+    if not provider_id:
+        return _err(rid, 4000, "provider_id required")
+    updates = _subscription_updates(params)
+    manual_value = updates.get("manualValue")
+    synced_value = updates.get("syncedValue")
+    event_type = "manual_update" if manual_value is not None or updates.get("activeSource") == "manual" else "sync"
+    summary = str(
+        params.get("summary")
+        or (
+            f"Manual override set to {manual_value.get('remaining')} {manual_value.get('displayUnit') if isinstance(manual_value, dict) else 'allowance'}"
+            if isinstance(manual_value, dict)
+            else "Subscription synced"
+        )
+    )
+    return _ok(rid, {"subscription": upsert_subscription(provider_id, updates, event_type, summary)})
+
+
+@method("subscriptions.connect")
+def _(rid, params: dict) -> dict:
+    provider_id = _subscription_provider_id(params)
+    if not provider_id:
+        return _err(rid, 4000, "provider_id required")
+    connector_kind = str(params.get("connector_kind") or params.get("connectorKind") or "manual").strip() or "manual"
+    label = params.get("label")
+    return _ok(rid, {"subscription": connect_subscription(provider_id, connector_kind, str(label) if label else None)})
+
+
+@method("subscriptions.disconnect")
+def _(rid, params: dict) -> dict:
+    provider_id = _subscription_provider_id(params)
+    if not provider_id:
+        return _err(rid, 4000, "provider_id required")
+    return _ok(rid, {"subscription": disconnect_subscription(provider_id)})
+
+
+@method("subscriptions.sync")
+def _(rid, params: dict) -> dict:
+    provider_id = _subscription_provider_id(params)
+    if not provider_id:
+        return _err(rid, 4000, "provider_id required")
+    synced_value = params.get("synced_value") or params.get("syncedValue")
+    last_error = params.get("last_error") or params.get("lastError")
+    return _ok(rid, {"subscription": sync_subscription(provider_id, synced_value, last_error)})
+
+
+# ── Delegation: subagent tree observability + controls ─────────────────────────
 # Powers the TUI's /agents overlay (see ui-tui/src/components/agentsOverlay).
 # The registry lives in tools/delegate_tool — these handlers are thin
 # translators between JSON-RPC and the Python API.

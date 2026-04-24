@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tui_gateway import server
+from tui_gateway import subscriptions as subscription_store
 
 
 class _ChunkyStdout:
@@ -705,6 +706,60 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
 
     assert "error" in resp
     assert "failed" in resp["error"]["message"]
+
+
+def test_subscription_api_hydrates_and_persists_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(subscription_store, "get_hermes_home", lambda: tmp_path)
+    subscription_store.clear_store()
+
+    list_resp = server.handle_request({"id": "1", "method": "subscriptions.list", "params": {}})
+    assert list_resp["result"]["subscriptions"]
+    assert len(list_resp["result"]["subscriptions"]) == 4
+    assert {row["providerId"] for row in list_resp["result"]["subscriptions"]} == {
+        "chatgpt_plus",
+        "cursor",
+        "google_ai",
+        "xiaomi_mimo",
+    }
+
+    update_resp = server.handle_request(
+        {
+            "id": "2",
+            "method": "subscriptions.update",
+            "params": {
+                "manual_value": {
+                    "confidence": "high",
+                    "displayUnit": "credits",
+                    "metricKind": "credits",
+                    "notes": ["manual override"],
+                    "remaining": 7,
+                    "sourceType": "manual",
+                    "sourceUpdatedAt": 1_700_000_000_000,
+                },
+                "notes": ["manual override"],
+                "provider_id": "cursor",
+            },
+        }
+    )
+    assert update_resp["result"]["subscription"]["providerId"] == "cursor"
+    assert update_resp["result"]["subscription"]["manualValue"]["remaining"] == 7
+
+    history_resp = server.handle_request(
+        {"id": "3", "method": "subscriptions.history", "params": {"provider_id": "cursor"}}
+    )
+    assert len(history_resp["result"]["history"]) == 1
+    assert history_resp["result"]["history"][0]["eventType"] == "manual_update"
+
+    sync_resp = server.handle_request(
+        {
+            "id": "4",
+            "method": "subscriptions.sync",
+            "params": {"last_error": "provider timeout", "provider_id": "cursor"},
+        }
+    )
+    assert sync_resp["result"]["subscription"]["manualValue"]["remaining"] == 7
+    assert sync_resp["result"]["subscription"]["lastError"] == "provider timeout"
+    assert sync_resp["result"]["subscription"]["status"] == "error"
 
 
 def test_plugins_list_surfaces_loader_error(monkeypatch):

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  applyActiveSourceSelection,
   applyManualOverride,
   applySyncResult,
   clearSubscriptionState,
@@ -13,8 +14,10 @@ import {
   upsertSubscription
 } from '../app/subscriptionStore.js'
 import {
+  hasSubscriptionValueConflict,
   normalizeSubscription,
   resolveActiveValue,
+  setSubscriptionActiveSource,
   type SubscriptionDraft,
   type SubscriptionValue,
   summarizeSubscriptions
@@ -64,6 +67,48 @@ describe('subscription foundation', () => {
     expect(record.syncedValue?.remaining).toBe(120)
     expect(record.manualValue?.remaining).toBe(80)
     expect(resolveActiveValue(record)?.remaining).toBe(80)
+  })
+
+
+  it('lets the user explicitly switch between manual and synced values without discarding either source', () => {
+    const record = normalizeSubscription(
+      {
+        activeSource: 'manual',
+        manualValue: makeValue({ remaining: 80, sourceType: 'manual' }),
+        providerId: 'cursor',
+        providerName: 'Cursor',
+        syncedValue: makeValue({ remaining: 120, sourceType: 'api' })
+      },
+      1_700_000_000_000
+    )
+
+    const synced = setSubscriptionActiveSource(record, 'synced', 1_700_000_000_100)
+    expect(synced.activeSource).toBe('synced')
+    expect(synced.syncedValue?.remaining).toBe(120)
+    expect(synced.manualValue?.remaining).toBe(80)
+    expect(resolveActiveValue(synced)?.remaining).toBe(120)
+
+    const manual = setSubscriptionActiveSource(synced, 'manual', 1_700_000_000_200)
+    expect(manual.activeSource).toBe('manual')
+    expect(manual.syncedValue?.remaining).toBe(120)
+    expect(manual.manualValue?.remaining).toBe(80)
+    expect(resolveActiveValue(manual)?.remaining).toBe(80)
+  })
+
+  it('detects when manual and synced values diverge so the dashboard can show a conflict banner', () => {
+    const record = normalizeSubscription(
+      {
+        activeSource: 'manual',
+        manualValue: makeValue({ remaining: 80, sourceType: 'manual' }),
+        providerId: 'google_ai',
+        providerName: 'Google AI',
+        syncedValue: makeValue({ remaining: 120, sourceType: 'api' })
+      },
+      1_700_000_000_000
+    )
+
+    expect(hasSubscriptionValueConflict(record)).toBe(true)
+    expect(hasSubscriptionValueConflict(normalizeSubscription({ providerId: 'cursor', providerName: 'Cursor' }, 1_700_000_000_000))).toBe(false)
   })
 
   it('summarizes totals, staleness, and manual-only coverage', () => {
@@ -148,6 +193,31 @@ describe('subscription foundation', () => {
 
     expect(entry.providerId).toBe('google_ai')
     expect(getSubscriptionHistory('google_ai')[0]?.summary).toBe('Nightly sync completed')
+  })
+
+  it('keeps selection changes and history events separate from the underlying sync/manual values', () => {
+    upsertSubscription(
+      normalizeSubscription(
+        {
+          activeSource: 'manual',
+          manualValue: makeValue({ remaining: 80, sourceType: 'manual' }),
+          providerId: 'cursor',
+          providerName: 'Cursor',
+          syncedValue: makeValue({ remaining: 120, sourceType: 'api' })
+        },
+        1_700_000_000_000
+      )
+    )
+
+    const next = applyActiveSourceSelection('cursor', 'synced', {
+      summary: 'Synced value selected from dashboard'
+    })
+
+    expect(next?.activeSource).toBe('synced')
+    expect(next?.manualValue?.remaining).toBe(80)
+    expect(next?.syncedValue?.remaining).toBe(120)
+    expect(resolveActiveValue(next!).remaining).toBe(120)
+    expect(getSubscriptionHistory('cursor')[0]?.summary).toBe('Synced value selected from dashboard')
   })
 
   it('keeps the summary atom in sync with the normalized records', () => {

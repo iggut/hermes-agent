@@ -6,6 +6,8 @@ import {
   normalizeSubscription,
   recordManualOverride,
   recordSyncResult,
+  setSubscriptionActiveSource,
+  type SubscriptionActiveSource,
   type SubscriptionDraft,
   type SubscriptionHistoryDraft,
   type SubscriptionHistoryEntry,
@@ -31,6 +33,11 @@ export const getSubscriptionSummary = (now = Date.now()): SubscriptionSummary =>
 
 export const setSubscriptions = (drafts: readonly SubscriptionDraft[], now = Date.now()) => {
   $subscriptions.set(drafts.map(draft => normalizeSubscription(draft, now)))
+}
+
+export const setSubscriptionHistory = (providerId: string, entries: readonly SubscriptionHistoryEntry[]) => {
+  const history = $subscriptionHistory.get()
+  $subscriptionHistory.set({ ...history, [providerId]: entries.slice(0, HISTORY_LIMIT) })
 }
 
 export const upsertSubscription = (draft: SubscriptionDraft, now = Date.now()) => {
@@ -149,6 +156,41 @@ export const disconnectSubscriptionRecord = (providerId: string, now = Date.now(
       providerId,
       sourceType: current.connection.connectorKind,
       summary: 'Disconnected subscription connector'
+    },
+    now
+  )
+
+  return next
+}
+
+export const applyActiveSourceSelection = (
+  providerId: string,
+  activeSource: SubscriptionActiveSource,
+  history?: Omit<SubscriptionHistoryDraft, 'afterValue' | 'beforeValue' | 'providerId' | 'sourceType'>,
+  now = Date.now()
+) => {
+  const current = $subscriptions.get().find(item => item.providerId === providerId)
+
+  if (!current) {
+    return null
+  }
+
+  const next = setSubscriptionActiveSource(current, activeSource, now)
+
+  if (next === current) {
+    return current
+  }
+
+  upsertSubscription(next, now)
+  recordSubscriptionEvent(
+    {
+      afterValue: next.activeSource === 'manual' ? next.manualValue : next.syncedValue,
+      beforeValue: current.activeSource === 'manual' ? current.manualValue : current.syncedValue,
+      eventType: 'manual_update',
+      providerId,
+      sourceType: next.activeSource === 'manual' ? (next.manualValue?.sourceType ?? 'manual') : (next.syncedValue?.sourceType ?? 'api'),
+      summary: history?.summary ?? (activeSource === 'manual' ? 'Manual value kept active' : 'Synced value selected'),
+      ...history
     },
     now
   )
