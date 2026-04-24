@@ -2,7 +2,7 @@
 
 import pytest
 
-from hermes_cli.config import validate_config_structure, validate_mempalace_memory_config, ConfigIssue
+from hermes_cli.config import validate_config_structure, ConfigIssue
 
 
 class TestCustomProvidersValidation:
@@ -147,95 +147,6 @@ class TestMissingModelSection:
             ],
         })
         assert any("no 'model' section" in i.message for i in issues)
-
-
-class TestMempalaceMemoryValidation:
-    def _patch_bindings(self, monkeypatch, *, tool_names=None):
-        import plugins.memory.mempalace as mempalace_mod
-
-        if tool_names is None:
-            tool_names = {
-                "mempalace_status": lambda: {"ok": True},
-                "mempalace_search": lambda: {"ok": True},
-                "mempalace_add_drawer": lambda: {"ok": True},
-                "mempalace_check_duplicate": lambda: {"ok": True},
-                "mempalace_delete_drawer": lambda: {"ok": True},
-                "mempalace_reconnect": lambda: {"ok": True},
-                "mempalace_get_taxonomy": lambda: {"ok": True},
-                "mempalace_list_drawers": lambda: {"ok": True},
-                "mempalace_list_rooms": lambda: {"ok": True},
-                "mempalace_list_wings": lambda: {"ok": True},
-                "mempalace_kg_stats": lambda: {"ok": True},
-                "mempalace_kg_query": lambda: {"ok": True},
-            }
-        monkeypatch.setattr(mempalace_mod, "_build_mempalace_tool_bindings", lambda tool_timeout=10.0: tool_names, raising=False)
-
-    def test_mempalace_first_missing_tool_bindings_fails(self, monkeypatch):
-        self._patch_bindings(monkeypatch, tool_names={})
-        issues = validate_config_structure({
-            "memory": {
-                "memory_backend": "mempalace_first",
-                "mempalace_enabled": True,
-                "disable_builtin_durable_memory": True,
-            }
-        })
-        errors = [issue for issue in issues if issue.severity == "error"]
-        assert any("required tool bindings" in issue.message or "tool bindings could not be created" in issue.message for issue in errors)
-
-    def test_mempalace_first_builtin_memory_enabled_fails(self, monkeypatch):
-        self._patch_bindings(monkeypatch)
-        issues = validate_config_structure({
-            "memory": {
-                "memory_backend": "mempalace_first",
-                "mempalace_enabled": True,
-                "disable_builtin_durable_memory": False,
-            }
-        })
-        errors = [issue for issue in issues if issue.severity == "error"]
-        assert any("disable_builtin_durable_memory" in issue.message for issue in errors)
-
-    def test_mempalace_first_bad_strategy_values_fail(self, monkeypatch):
-        self._patch_bindings(monkeypatch)
-        issues = validate_config_structure({
-            "memory": {
-                "memory_backend": "mempalace_first",
-                "mempalace_enabled": True,
-                "disable_builtin_durable_memory": True,
-                "mempalace_default_wing_strategy": "unknown",
-                "mempalace_default_room_strategy": "broken",
-            }
-        })
-        errors = [issue for issue in issues if issue.severity == "error"]
-        assert any("wing_strategy" in issue.message for issue in errors)
-        assert any("room_strategy" in issue.message for issue in errors)
-
-    def test_sane_mempalace_first_config_passes(self, monkeypatch):
-        self._patch_bindings(monkeypatch)
-        issues = validate_config_structure({
-            "memory": {
-                "memory_backend": "mempalace_first",
-                "mempalace_enabled": True,
-                "disable_builtin_durable_memory": True,
-                "mempalace_duplicate_threshold": 0.92,
-                "mempalace_default_wing_strategy": "active_project",
-                "mempalace_default_room_strategy": "fact_type_and_project",
-                "mempalace_include_legacy_local_envelopes": False,
-                "mempalace_fallback_local_write": False,
-            }
-        })
-        errors = [issue for issue in issues if issue.severity == "error"]
-        assert errors == []
-
-    def test_legacy_local_config_still_passes(self):
-        issues = validate_config_structure({
-            "memory": {
-                "memory_backend": "local",
-                "memory_enabled": True,
-                "user_profile_enabled": True,
-            }
-        })
-        errors = [issue for issue in issues if issue.severity == "error"]
-        assert errors == []
 
     def test_custom_providers_with_model(self):
         issues = validate_config_structure({

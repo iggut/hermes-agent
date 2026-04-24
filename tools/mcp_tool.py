@@ -83,7 +83,6 @@ import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, quote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -2073,111 +2072,6 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
     return _handler
 
 
-def _is_mempalace_server_name(server_name: str) -> bool:
-    return "mempalace" in str(server_name or "").lower()
-
-
-def _parse_mempalace_resource_hint(uri: str) -> Optional[dict]:
-    """Parse legacy/canonical MemPalace resource identifiers into tool hints."""
-    raw = str(uri or "").strip()
-    if not raw:
-        return None
-
-    # Legacy shorthand used by existing prompts: wing/room
-    if "://" not in raw:
-        parts = [part.strip() for part in raw.split("/") if part and part.strip()]
-        if len(parts) != 2:
-            return None
-        wing, room = parts
-        return {
-            "kind": "search",
-            "wing": wing,
-            "room": room,
-            "query": "recent important memories decisions learnings preferences",
-            "limit": 8,
-            "normalized_uri": (
-                f"mempalace://room?wing={quote(wing, safe='')}&room={quote(room, safe='')}"
-            ),
-        }
-
-    try:
-        parsed = urlparse(raw)
-    except Exception:
-        return None
-
-    if parsed.scheme != "mempalace":
-        return None
-
-    route = "/".join(part for part in [parsed.netloc, parsed.path.lstrip("/")] if part)
-    if route == "status":
-        return {"kind": "status", "normalized_uri": "mempalace://status"}
-    if route == "taxonomy":
-        return {"kind": "taxonomy", "normalized_uri": "mempalace://taxonomy"}
-    if route == "kg/stats":
-        return {"kind": "kg_stats", "normalized_uri": "mempalace://kg/stats"}
-
-    query_params = parse_qs(parsed.query or "", keep_blank_values=False)
-    if parsed.netloc in {"room", "search"}:
-        wing = (query_params.get("wing") or [None])[0]
-        room = (query_params.get("room") or [None])[0]
-        if not wing or not room:
-            return None
-        query = (query_params.get("q") or ["recent important memories decisions learnings preferences"])[0]
-        limit_raw = (query_params.get("limit") or ["8"])[0]
-        try:
-            limit = int(limit_raw)
-        except (TypeError, ValueError):
-            limit = 8
-        if limit < 1:
-            limit = 8
-        return {
-            "kind": "search",
-            "wing": wing,
-            "room": room,
-            "query": query,
-            "limit": limit,
-            "normalized_uri": (
-                f"mempalace://room?wing={quote(str(wing), safe='')}&room={quote(str(room), safe='')}"
-            ),
-        }
-
-    return None
-
-
-def _mcp_tool_result_text(result: Any) -> str:
-    parts: List[str] = []
-    for block in (getattr(result, "content", None) or []):
-        if hasattr(block, "text") and block.text is not None:
-            parts.append(str(block.text))
-    return "\n".join(parts) if parts else ""
-
-
-async def _read_mempalace_via_tools(session: Any, hint: dict) -> str:
-    kind = hint.get("kind")
-    if kind == "status":
-        tool_name, arguments = "mempalace_status", {}
-    elif kind == "taxonomy":
-        tool_name, arguments = "mempalace_get_taxonomy", {}
-    elif kind == "kg_stats":
-        tool_name, arguments = "mempalace_kg_stats", {}
-    else:
-        tool_name = "mempalace_search"
-        arguments = {
-            "query": hint.get("query", "recent important memories decisions learnings preferences"),
-            "limit": int(hint.get("limit", 8)),
-            "wing": hint.get("wing"),
-            "room": hint.get("room"),
-        }
-
-    result = await session.call_tool(tool_name, arguments=arguments)
-    text_result = _mcp_tool_result_text(result)
-    if getattr(result, "isError", False):
-        return json.dumps({
-            "error": _sanitize_error(text_result or f"MCP call failed: {tool_name}"),
-        })
-    return json.dumps({"result": text_result})
-
-
 def _make_read_resource_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that reads a resource by URI from an MCP server."""
 
@@ -2196,10 +2090,6 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             return tool_error("Missing required parameter 'uri'")
 
         async def _call():
-            mempalace_hint = _parse_mempalace_resource_hint(uri)
-            if mempalace_hint and _is_mempalace_server_name(server_name):
-                return await _read_mempalace_via_tools(server.session, mempalace_hint)
-
             result = await server.session.read_resource(uri)
             # read_resource returns ReadResourceResult with .contents list
             parts: List[str] = []

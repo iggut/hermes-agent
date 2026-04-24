@@ -13,14 +13,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import (
-    describe_memory_mode,
-    get_env_path,
-    get_env_value,
-    get_hermes_home,
-    load_config,
-    validate_mempalace_memory_config,
-)
+from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
@@ -117,37 +110,7 @@ def show_status(args):
 
     print(f"  Model:        {_configured_model_label(config)}")
     print(f"  Provider:     {_effective_provider_label()}")
-
-    # =========================================================================
-    # Memory
-    # =========================================================================
-    print()
-    print(color("◆ Memory", Colors.CYAN, Colors.BOLD))
-    try:
-        memory_status = describe_memory_mode(config)
-        for key in (
-            "memory_backend",
-            "builtin_durable_memory",
-            "mempalace_tools",
-            "resume_on_start",
-            "resume_status",
-            "legacy_local_overlap",
-        ):
-            print(f"  {key}: {memory_status.get(key, '(unknown)')}")
-
-        validation_issues = [
-            issue for issue in validate_mempalace_memory_config(config)
-            if issue.severity == "error"
-        ]
-        if validation_issues:
-            print(color("  MemPalace-first validation errors:", Colors.RED, Colors.BOLD))
-            for issue in validation_issues:
-                print(f"    {check_mark(False)} {issue.message}")
-                if issue.hint:
-                    print(f"      {issue.hint}")
-    except Exception as exc:
-        print(f"  memory status unavailable: {exc}")
-
+    
     # =========================================================================
     # API Keys
     # =========================================================================

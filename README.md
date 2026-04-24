@@ -21,7 +21,6 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 - **Native Google AI Studio (Gemini) support** — direct access to Gemini models through the built-in provider stack.
 - **Smarter inactivity-aware timeouts** — background work is measured by real activity, reducing premature interruptions during long jobs.
 - **Approval buttons for gated actions** — safer command approvals across supported gateways with native platform interaction.
-- **Companion MemPalace routing layer** — the fork relies on the [hermes_mempalace_routing](https://github.com/iggut/hermes_mempalace_routing) repository for MemPalace-aware context routing, raw artifact storage, and evidence-backed prompt assembly.
 
 This fork stays aligned with upstream Hermes while extending the experience with the features above.
 
@@ -30,7 +29,7 @@ It is maintained as a practical downstream distribution: upstream-compatible whe
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
 <tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
-<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard. MemPalace-first durable memory integration is documented in <code>mempalace-readme.md</code>.</td></tr>
+<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
 <tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
 <tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
 <tr><td><b>Runs anywhere, not just your laptop</b></td><td>Six terminal backends — local, Docker, SSH, Daytona, Singularity, and Modal. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
@@ -44,11 +43,10 @@ It is maintained as a practical downstream distribution: upstream-compatible whe
 For MemPalace-first durable memory workflows, this fork is designed to work alongside the companion [hermes_mempalace_routing](https://github.com/iggut/hermes_mempalace_routing) repository.
 
 That repository provides the MemPalace-aware routing layer used for:
+- raw artifact storage
 - memory envelopes with provenance
 - route-based context selection
 - evidence-backed prompt assembly
-
-MemPalace remains the source of truth for the raw data; the companion layer keeps routing and prompt assembly focused on metadata and evidence rather than duplicating storage.
 
 If you are deploying or evaluating the MemPalace integration, install and configure that repository as part of the stack.
 

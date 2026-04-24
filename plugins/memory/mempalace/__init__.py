@@ -22,127 +22,59 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-HermesHostHooks = None
-HermesMemPalaceRoutingPlugin = None
-HermesMemPalaceRoutingConfig = None
+try:
+    from hermes_mempalace_routing import HermesHostHooks, RoutingConfig as HermesMemPalaceRoutingConfig
+except Exception:  # pragma: no cover - optional dependency in host checkout
+    HermesHostHooks = None
+    HermesMemPalaceRoutingConfig = None
 
 # MemPalace Python path
 _MEMPALACE_ROOT = os.path.expanduser("~/.openclaw/workspace/mempalace")
 _MEMPALACE_VENV = os.path.expanduser("~/.openclaw/workspace/mempalace-venv")
 _PALACE_PATH = os.path.expanduser("~/.mempalace/palace")
 
-_MEMPALACE_TOOL_NAMES = (
-    "mempalace_status",
-    "mempalace_search",
-    "mempalace_add_drawer",
-    "mempalace_check_duplicate",
-    "mempalace_delete_drawer",
-    "mempalace_reconnect",
-    "mempalace_get_taxonomy",
-    "mempalace_list_drawers",
-    "mempalace_list_rooms",
-    "mempalace_list_wings",
-    "mempalace_kg_stats",
-    "mempalace_kg_query",
-)
-
 
 def _ensure_routing_package_on_path() -> None:
     """Expose the hermes_mempalace_routing checkout to the host import path."""
-    candidates: list[Path] = []
+    candidates = []
     env_root = os.environ.get("HERMES_MEMPALACE_ROUTING_ROOT")
     if env_root:
         candidates.append(Path(env_root).expanduser())
     candidates.append(Path.home() / "workspace" / "hermes_mempalace_routing")
-    # Any ancestor directory may be a workspace root that also contains
-    # ``hermes_mempalace_routing`` (companion clone / symlinked layout).
-    try:
-        here = Path(__file__).resolve()
-        for p in here.parents:
-            cand = p / "hermes_mempalace_routing"
-            if cand not in candidates:
-                candidates.append(cand)
-    except Exception:
-        pass
 
     for candidate in candidates:
         try:
             if candidate.is_dir():
-                inner = candidate / "hermes_mempalace_routing"
-                if inner.is_dir() and (inner / "__init__.py").is_file():
-                    root = str(candidate)
-                    if root not in sys.path:
-                        sys.path.insert(0, root)
-                    return
+                root = str(candidate)
+                if root not in sys.path:
+                    sys.path.insert(0, root)
+                return
         except Exception:
             continue
 
 
 _ensure_routing_package_on_path()
-
-try:
-    from hermes_mempalace_routing import (
-        HermesHostHooks as _HermesHostHooks,
-        HermesMemPalaceRoutingPlugin as _HermesMemPalaceRoutingPlugin,
-        RoutingConfig as _HermesMemPalaceRoutingConfig,
-    )
-except Exception as exc:  # pragma: no cover - optional dependency in host checkout
-    logger.info("mempalace_routing_import_unavailable error=%s", exc)
-else:
-    HermesHostHooks = _HermesHostHooks
-    HermesMemPalaceRoutingPlugin = _HermesMemPalaceRoutingPlugin
-    HermesMemPalaceRoutingConfig = _HermesMemPalaceRoutingConfig
-
-
 def _default_routing_base_dir(hermes_home: str | None = None) -> Path:
     base = Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes"
     return base / "mempalace-routing"
 
 
-def _build_mempalace_tool_bindings(tool_timeout: float = 10.0) -> dict[str, Callable[..., Any]]:
-    """Bind the host MCP wrappers expected by hermes_mempalace_routing."""
-    try:
-        from tools.mcp_tool import _make_tool_handler
-    except Exception:
-        return {}
-    return {
-        name: _make_tool_handler("mempalace", name, tool_timeout)
-        for name in _MEMPALACE_TOOL_NAMES
-    }
-
-
 def _build_routing_hooks(config: dict | None = None, *, hermes_home: str | None = None):
-    if HermesHostHooks is None or HermesMemPalaceRoutingConfig is None or HermesMemPalaceRoutingPlugin is None:
+    if HermesHostHooks is None or HermesMemPalaceRoutingConfig is None:
         return None
     cfg = config or {}
     base_dir = Path(cfg.get("routing_base_dir") or _default_routing_base_dir(hermes_home))
-    backend = str(cfg.get("memory_backend", "local") or "local").strip() or "local"
-    mempalace_first = backend == "mempalace_first"
     routing_cfg = HermesMemPalaceRoutingConfig(
         base_dir=base_dir,
         storage_backend=cfg.get("routing_storage_backend", "sqlite"),
-        memory_backend=backend,
-        mempalace_enabled=bool(cfg.get("mempalace_enabled", False) or mempalace_first),
-        mempalace_fail_open=bool(cfg.get("mempalace_fail_open", True)),
-        mempalace_resume_on_start=bool(cfg.get("mempalace_resume_on_start", True)),
-        mempalace_recall_on_every_query=bool(cfg.get("mempalace_recall_on_every_query", True)),
-        mempalace_duplicate_threshold=float(cfg.get("mempalace_duplicate_threshold", 0.92)),
-        mempalace_allow_duplicate_supersede=bool(cfg.get("mempalace_allow_duplicate_supersede", False)),
-        mempalace_default_wing_strategy=cfg.get("mempalace_default_wing_strategy", "active_project"),
-        mempalace_default_room_strategy=cfg.get("mempalace_default_room_strategy", "fact_type_and_project"),
-        mempalace_include_legacy_local_envelopes=bool(cfg.get("mempalace_include_legacy_local_envelopes", False)),
-        mempalace_fallback_local_write=bool(cfg.get("mempalace_fallback_local_write", False)),
-        disable_builtin_durable_memory=bool(cfg.get("disable_builtin_durable_memory", False) or mempalace_first),
     )
     if "routing_enabled" in cfg:
         routing_cfg.enabled = bool(cfg.get("routing_enabled"))
-    tools = _build_mempalace_tool_bindings(float(cfg.get("mempalace_tool_timeout", 10.0)))
-    plugin = HermesMemPalaceRoutingPlugin(routing_cfg, mempalace_tools=tools)
-    return HermesHostHooks(plugin)
+    return HermesHostHooks.from_config(routing_cfg)
 
 
 def _classify_turn_content(user_content: str, assistant_content: str) -> tuple[str, str, list[str]]:
@@ -172,11 +104,6 @@ class MemPalaceMemoryProvider:
         self._wake_up_context = ""
         self._routing_hooks = None
         self._hermes_home = None
-        self._routing_plugin = None
-        self._resume_wakeup_payload = {}
-        self._resume_attempted = False
-        self._resume_status = "skipped"
-        self._resume_error = ""
 
     @property
     def name(self) -> str:
@@ -199,32 +126,7 @@ class MemPalaceMemoryProvider:
             self._initialized = True
             self._hermes_home = kwargs.get("hermes_home")
             self._routing_hooks = _build_routing_hooks(self._config, hermes_home=self._hermes_home)
-            self._routing_plugin = getattr(self._routing_hooks, "plugin", None)
-            self._resume_wakeup_payload = {}
-            self._resume_attempted = False
-            self._resume_status = "skipped"
-            self._resume_error = ""
             self._build_wake_up_context()
-            if self._routing_hooks is not None and bool(self._config.get("mempalace_resume_on_start", True)):
-                try:
-                    self._resume_attempted = True
-                    active_project = kwargs.get("active_project") or kwargs.get("agent_workspace") or self._config.get("active_project") or self._config.get("agent_workspace")
-                    wake_query = kwargs.get("session_title") or kwargs.get("task_hint") or session_id or "session wake"
-                    self._resume_wakeup_payload = self._routing_hooks.session_wake_or_resume(
-                        query=str(wake_query),
-                        active_project=active_project,
-                        task_hint=kwargs.get("task_hint") or self._config.get("task_hint"),
-                    )
-                    self._resume_status = "succeeded"
-                except Exception as wake_err:
-                    logger.debug(f"MemPalace session wake/resume failed: {wake_err}")
-                    self._resume_wakeup_payload = {}
-                    self._resume_status = "failed-open"
-                    self._resume_error = str(wake_err)
-            elif self._routing_hooks is None:
-                self._resume_status = "skipped"
-            else:
-                self._resume_status = "skipped"
             logger.info(
                 f"MemPalace memory provider initialized: {self._drawer_count} drawers"
             )
@@ -335,35 +237,7 @@ class MemPalaceMemoryProvider:
             if not self._wake_up_context:
                 return "# MemPalace\nPalace connected. Use mempalace_search to find memories."
 
-        wake_lines = [self._wake_up_context]
-        if self._resume_wakeup_payload:
-            status = self._resume_wakeup_payload.get("mempalace_status") or {}
-            resume_hits = self._resume_wakeup_payload.get("resume_envelopes") or []
-            wake_lines.append("\n## Session Resume")
-            if isinstance(status, dict) and status.get("ok") is False and status.get("error"):
-                wake_lines.append(f"- status: {status.get('error')}")
-            else:
-                wake_lines.append("- status: connected")
-            wake_lines.append(f"- cached resume hits: {len(resume_hits)}")
-        return "\n".join(wake_lines)
-
-    def memory_status(self) -> Dict[str, str]:
-        """Return a compact runtime status snapshot for operator-visible startup logs."""
-        mem_config = self._config or {}
-        backend = str(mem_config.get("memory_backend", "local") or "local").strip() or "local"
-        tools_bound = bool(getattr(self._routing_plugin, "bound_tools", None))
-        if not tools_bound and self._routing_hooks is not None:
-            plugin = getattr(self._routing_hooks, "plugin", None)
-            tools_bound = bool(getattr(plugin, "bound_tools", None))
-
-        return {
-            "memory_backend": backend,
-            "builtin_durable_memory": "disabled" if bool(mem_config.get("disable_builtin_durable_memory", False) or backend == "mempalace_first") else "enabled",
-            "mempalace_tools": "bound" if tools_bound else "absent",
-            "resume_on_start": "enabled" if bool(mem_config.get("mempalace_resume_on_start", True)) else "disabled",
-            "resume_status": self._resume_status if self._resume_attempted or self._resume_status != "skipped" else "skipped",
-            "legacy_local_overlap": "on" if bool(mem_config.get("mempalace_include_legacy_local_envelopes", False)) else "off",
-        }
+        return self._wake_up_context
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Search palace for relevant context before each turn.

@@ -1670,50 +1670,6 @@ class TestUtilityHandlers:
         assert "error" in result
         assert "not connected" in result["error"]
 
-    def test_read_resource_mempalace_legacy_path_falls_back_to_search_tool(self):
-        from tools.mcp_tool import _make_read_resource_handler, _servers
-
-        mock_session = MagicMock()
-        mock_session.read_resource = AsyncMock(
-            side_effect=ValueError("Input should be a valid URL")
-        )
-        mock_session.call_tool = AsyncMock(
-            return_value=_make_call_result(
-                text=json.dumps(
-                    {
-                        "results": [
-                            {
-                                "wing": "wing_user",
-                                "room": "room_preferences",
-                                "text": "prefers concise answers",
-                            }
-                        ]
-                    }
-                ),
-                is_error=False,
-            )
-        )
-        server = _make_mock_server("mempalace", session=mock_session)
-        _servers["mempalace"] = server
-
-        try:
-            handler = _make_read_resource_handler("mempalace", 120)
-            with self._patch_mcp_loop():
-                result = json.loads(handler({"uri": "wing_user/room_preferences"}))
-            assert "error" not in result
-            assert "prefers concise answers" in result["result"]
-            mock_session.call_tool.assert_called_once_with(
-                "mempalace_search",
-                arguments={
-                    "query": "recent important memories decisions learnings preferences",
-                    "limit": 8,
-                    "wing": "wing_user",
-                    "room": "room_preferences",
-                },
-            )
-        finally:
-            _servers.pop("mempalace", None)
-
     # -- list_prompts --
 
     def test_list_prompts_success(self):
