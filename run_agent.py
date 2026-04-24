@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 import os
 import random
 import re
+import ssl
 import sys
 import tempfile
 import time
@@ -2270,13 +2271,14 @@ class AIAgent:
         # ("switched to anthropic, tui keeps trying openrouter").
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
+        fallback_chain = list(getattr(self, "_fallback_chain", []) or [])
         if old_norm and new_norm and old_norm != new_norm:
-            fallback_chain = getattr(self, "_fallback_chain", [])
-            self._fallback_chain = [
+            fallback_chain = [
                 entry for entry in fallback_chain
                 if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
             ]
-            self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+        self._fallback_chain = fallback_chain
+        self._fallback_model = fallback_chain[0] if fallback_chain else None
 
         logging.info(
             "Model switched in-place: %s (%s) -> %s (%s)",
@@ -6639,7 +6641,7 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
-    def _try_activate_fallback(self) -> bool:
+    def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
         """Switch to the next fallback model/provider in the chain.
 
         Called when the current model is failing after retries.  Swaps the
@@ -6651,6 +6653,15 @@ class AIAgent:
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
+        if reason in (FailoverReason.rate_limit, FailoverReason.billing):
+            # Only start cooldown when leaving the primary provider.  If we're
+            # already on a fallback and chain-switching, the primary wasn't the
+            # source of the 429 so the cooldown should not be reset/extended.
+            fallback_already_active = bool(getattr(self, "_fallback_activated", False))
+            current_provider = (getattr(self, "provider", "") or "").strip().lower()
+            primary_provider = ((self._primary_runtime or {}).get("provider") or "").strip().lower()
+            if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
+                self._rate_limited_until = time.monotonic() + 60
         if self._fallback_index >= len(self._fallback_chain):
             return False
 
@@ -6787,11 +6798,15 @@ class AIAgent:
             # Without this, compression decisions use the primary model's
             # context window (e.g. 200K) instead of the fallback's (e.g. 32K),
             # causing oversized sessions to overflow the fallback.
+            # Also pass _config_context_length so the explicit config override
+            # (model.context_length in config.yaml) is respected — without this,
+            # the fallback activation drops to 128K even when config says 204800.
             if hasattr(self, 'context_compressor') and self.context_compressor:
                 from agent.model_metadata import get_model_context_length
                 fb_context_length = get_model_context_length(
                     self.model, base_url=self.base_url,
                     api_key=self.api_key, provider=self.provider,
+                    config_context_length=getattr(self, "_config_context_length", None),
                 )
                 self.context_compressor.update_model(
                     model=self.model,
@@ -6829,6 +6844,9 @@ class AIAgent:
         """
         if not self._fallback_activated:
             return False
+
+        if getattr(self, "_rate_limited_until", 0) > time.monotonic():
+            return False  # primary still in rate-limit cooldown, stay on fallback
 
         rt = self._primary_runtime
         try:
@@ -10872,7 +10890,7 @@ class AIAgent:
                         )
                         if not pool_may_recover:
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                            if self._try_activate_fallback():
+                            if self._try_activate_fallback(reason=classified.reason):
                                 retry_count = 0
                                 compression_attempts = 0
                                 primary_recovery_attempted = False
@@ -11137,6 +11155,14 @@ class AIAgent:
                         and not isinstance(
                             api_error, (UnicodeEncodeError, json.JSONDecodeError)
                         )
+                        # ssl.SSLError (and its subclass SSLCertVerificationError)
+                        # inherits from OSError *and* ValueError via Python MRO,
+                        # so the isinstance(ValueError) check above would
+                        # misclassify a TLS transport failure as a local
+                        # programming bug and abort without retrying.  Exclude
+                        # ssl.SSLError explicitly so the error classifier's
+                        # retryable=True mapping takes effect instead.
+                        and not isinstance(api_error, ssl.SSLError)
                     )
                     is_client_error = (
                         is_local_validation_error
