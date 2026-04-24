@@ -167,6 +167,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="<path>"),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
+    CommandDef("upa", "Sync ~/.hermes/hermes-agent from upstream, preserve local changes, and push your fork", "Info",
+               cli_only=True),
+    CommandDef("upw", "Sync ~/.hermes/hermes-webui from upstream, preserve local changes, and push your fork", "Info",
+               cli_only=True),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Exit

@@ -20,6 +20,7 @@ import sys
 import json
 import re
 import concurrent.futures
+import subprocess
 import base64
 import atexit
 import tempfile
@@ -5874,6 +5875,226 @@ class HermesCLI:
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()
     
+    def _git_run(self, repo_path: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess:
+        """Run a git command inside ``repo_path`` and capture output."""
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(repo_path),
+            text=True,
+            capture_output=True,
+            check=check,
+        )
+
+    def _build_upstream_sync_prompt(
+        self,
+        *,
+        repo_label: str,
+        repo_path: Path,
+        branch_name: str,
+        backup_branch: str,
+        conflicted_files: list[str],
+    ) -> str:
+        """Build the prompt used when the model must repair merge conflicts."""
+        status = self._git_run(repo_path, "status", "--short").stdout.strip() or "(clean except for merge conflicts)"
+        parts: list[str] = [
+            f"You are resolving git merge conflicts for the Hermes {repo_label} repository.",
+            f"Repository path: {repo_path}",
+            f"Current branch: {branch_name}",
+            f"Backup branch created before sync: {backup_branch}",
+            "Upstream merge in progress: upstream/main -> current branch",
+            "Preserve local fork-specific changes and preserve upstream changes wherever they do not conflict.",
+            "Return ONLY valid JSON with this schema:",
+            '{"files":[{"path":"relative/path","content":"full resolved file contents"}]}',
+            "Do not include markdown fences or explanatory text.",
+            f"Git status:\n{status}",
+            "Conflicted files and current contents follow.",
+        ]
+        for rel_path in conflicted_files:
+            file_path = repo_path / rel_path
+            try:
+                content = file_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+            except FileNotFoundError:
+                content = "<file missing from working tree>"
+            parts.extend([
+                "",
+                f"FILE: {rel_path}",
+                "--- BEGIN FILE ---",
+                content,
+                "--- END FILE ---",
+            ])
+        return "\n".join(parts)
+
+    def _resolve_merge_conflicts_with_model(
+        self,
+        *,
+        repo_path: Path,
+        repo_label: str,
+        branch_name: str,
+        backup_branch: str,
+        conflicted_files: list[str],
+    ) -> bool:
+        """Ask the default model to resolve merge conflicts and apply the result."""
+        prompt = self._build_upstream_sync_prompt(
+            repo_label=repo_label,
+            repo_path=repo_path,
+            branch_name=branch_name,
+            backup_branch=backup_branch,
+            conflicted_files=conflicted_files,
+        )
+        system_prompt = (
+            "You are a careful git merge conflict resolver. "
+            "Only return valid JSON and only modify the conflicted files listed by the user. "
+            "Keep repo-specific behavior intact and do not invent new files."
+        )
+        model = getattr(self, "model", None) or ""
+        runtime = {
+            "api_key": getattr(self, "api_key", None),
+            "base_url": getattr(self, "base_url", None),
+            "provider": getattr(self, "provider", None),
+            "api_mode": getattr(self, "api_mode", None),
+            "command": getattr(self, "acp_command", None),
+            "args": list(getattr(self, "acp_args", None) or []),
+        }
+        resolver = AIAgent(
+            model=model,
+            api_key=runtime["api_key"],
+            base_url=runtime["base_url"],
+            provider=runtime["provider"],
+            api_mode=runtime["api_mode"],
+            acp_command=runtime["command"],
+            acp_args=runtime["args"],
+            enabled_toolsets=[],
+            disabled_toolsets=["terminal", "file", "browser", "web"],
+            max_iterations=1,
+            quiet_mode=True,
+            ephemeral_system_prompt=system_prompt,
+        )
+        result = resolver.run_conversation(prompt)
+        response_text = result.get("final_response") if isinstance(result, dict) else str(result)
+        if not response_text:
+            raise RuntimeError("Default model returned no conflict resolution output")
+        fence_pattern = r"^```(?:json)?\s*|\s*```$"
+        cleaned = re.sub(fence_pattern, "", response_text.strip(), flags=re.IGNORECASE | re.MULTILINE)
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Model returned invalid JSON for conflict resolution: {exc}\n{response_text}") from exc
+        files = payload.get("files") if isinstance(payload, dict) else None
+        if not isinstance(files, list) or not files:
+            raise RuntimeError("Model conflict-resolution payload missing files[]")
+
+        resolved_paths: list[str] = []
+        for item in files:
+            if not isinstance(item, dict):
+                raise RuntimeError("Model conflict-resolution payload contained a non-object file entry")
+            rel_path = item.get("path")
+            content = item.get("content")
+            if not rel_path or not isinstance(rel_path, str) or not isinstance(content, str):
+                raise RuntimeError("Model conflict-resolution payload missing path/content")
+            target = (repo_path / rel_path).resolve()
+            repo_root = repo_path.resolve()
+            if repo_root not in target.parents and target != repo_root:
+                raise RuntimeError(f"Refusing to write outside repo: {rel_path}")
+            target.write_text(content, encoding="utf-8")
+            resolved_paths.append(rel_path)
+        add_proc = self._git_run(repo_path, "add", "--", *resolved_paths)
+        if add_proc.returncode != 0:
+            raise RuntimeError(add_proc.stderr.strip() or add_proc.stdout.strip() or "git add failed")
+        return True
+
+    def _sync_upstream_repo(self, repo_path: Path, repo_label: str) -> str:
+        """Sync the current branch with upstream/main and push the fork."""
+        if not repo_path.exists():
+            raise FileNotFoundError(f"{repo_label} repository not found: {repo_path}")
+        if not (repo_path / ".git").exists():
+            raise RuntimeError(f"{repo_path} is not a git repository")
+
+        branch_proc = self._git_run(repo_path, "rev-parse", "--abbrev-ref", "HEAD")
+        branch_name = branch_proc.stdout.strip()
+        if branch_proc.returncode != 0 or not branch_name or branch_name == "HEAD":
+            raise RuntimeError(branch_proc.stderr.strip() or "Unable to determine current branch")
+
+        dirty_proc = self._git_run(repo_path, "status", "--porcelain")
+        had_local_changes = bool(dirty_proc.stdout.strip())
+        stash_ref: str | None = None
+        if had_local_changes:
+            stash_msg = f"hermes-{repo_label}-upa-{int(time.time())}"
+            stash_proc = self._git_run(repo_path, "stash", "push", "-u", "-m", stash_msg)
+            if stash_proc.returncode != 0:
+                raise RuntimeError(stash_proc.stderr.strip() or stash_proc.stdout.strip() or "git stash push failed")
+            stash_ref = stash_msg
+
+        fetch_origin = self._git_run(repo_path, "fetch", "--prune", "origin")
+        if fetch_origin.returncode != 0:
+            raise RuntimeError(fetch_origin.stderr.strip() or fetch_origin.stdout.strip() or "git fetch origin failed")
+        fetch_upstream = self._git_run(repo_path, "fetch", "--prune", "upstream")
+        if fetch_upstream.returncode != 0:
+            raise RuntimeError(fetch_upstream.stderr.strip() or fetch_upstream.stdout.strip() or "git fetch upstream failed")
+
+        backup_branch = f"backup/{repo_label}-before-upstream-sync-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        backup_proc = self._git_run(repo_path, "branch", backup_branch)
+        if backup_proc.returncode != 0:
+            raise RuntimeError(backup_proc.stderr.strip() or backup_proc.stdout.strip() or "git backup branch creation failed")
+
+        merge_proc = self._git_run(repo_path, "merge", "--no-ff", "--no-edit", "upstream/main")
+        if merge_proc.returncode != 0:
+            conflicted_files = [
+                line.strip()
+                for line in self._git_run(repo_path, "diff", "--name-only", "--diff-filter=U").stdout.splitlines()
+                if line.strip()
+            ]
+            if not conflicted_files:
+                raise RuntimeError(merge_proc.stderr.strip() or merge_proc.stdout.strip() or "git merge failed")
+            self._resolve_merge_conflicts_with_model(
+                repo_path=repo_path,
+                repo_label=repo_label,
+                branch_name=branch_name,
+                backup_branch=backup_branch,
+                conflicted_files=conflicted_files,
+            )
+            continue_proc = self._git_run(repo_path, "commit", "--no-edit")
+            if continue_proc.returncode != 0:
+                raise RuntimeError(continue_proc.stderr.strip() or continue_proc.stdout.strip() or "git merge continue failed")
+
+        push_proc = self._git_run(repo_path, "push", "origin", branch_name)
+        if push_proc.returncode != 0:
+            raise RuntimeError(push_proc.stderr.strip() or push_proc.stdout.strip() or "git push origin failed")
+
+        if stash_ref:
+            pop_proc = self._git_run(repo_path, "stash", "pop")
+            if pop_proc.returncode != 0:
+                conflicted_files = [
+                    line.strip()
+                    for line in self._git_run(repo_path, "diff", "--name-only", "--diff-filter=U").stdout.splitlines()
+                    if line.strip()
+                ]
+                if conflicted_files:
+                    self._resolve_merge_conflicts_with_model(
+                        repo_path=repo_path,
+                        repo_label=repo_label,
+                        branch_name=branch_name,
+                        backup_branch=backup_branch,
+                        conflicted_files=conflicted_files,
+                    )
+                else:
+                    raise RuntimeError(pop_proc.stderr.strip() or pop_proc.stdout.strip() or "git stash pop failed")
+
+        return branch_name
+
+    def _handle_upstream_sync_command(self, command_name: str) -> None:
+        """Run /upa or /upw against the configured repository."""
+        repo_map = {
+            "upa": (Path(__file__).resolve().parent, "hermes-agent"),
+            "upw": (Path.home() / ".hermes" / "hermes-webui", "hermes-webui"),
+        }
+        repo_path, repo_label = repo_map[command_name]
+        branch_name = self._sync_upstream_repo(repo_path, repo_label)
+        self._console_print(
+            f"  Synced {repo_label} from upstream/main and pushed origin/{branch_name}"
+        )
+
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
@@ -6078,6 +6299,10 @@ class HermesCLI:
             self._handle_copy_command(cmd_original)
         elif canonical == "debug":
             self._handle_debug_command()
+        elif canonical == "upa":
+            self._handle_upstream_sync_command("upa")
+        elif canonical == "upw":
+            self._handle_upstream_sync_command("upw")
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
