@@ -263,7 +263,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       writeOsc52Clipboard(target.text)
-      sys('sent OSC52 copy sequence (terminal support required)')
+      sys(`copied ${target.text.length} chars`)
     }
   },
 

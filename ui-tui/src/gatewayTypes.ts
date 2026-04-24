@@ -153,7 +153,7 @@ export interface SubscriptionDisconnectResponse {
 // ── Session lifecycle ─────────────────────────────────────────────────────────
 
 export interface SessionCreateResponse {
-  info?: SessionInfo & { credential_warning?: string }
+  info?: SessionInfo & { config_warning?: string; credential_warning?: string }
   session_id: string
 }
 
