@@ -26,16 +26,9 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
-try:
-    from hermes_mempalace_routing import (
-        HermesHostHooks,
-        HermesMemPalaceRoutingPlugin,
-        RoutingConfig as HermesMemPalaceRoutingConfig,
-    )
-except Exception:  # pragma: no cover - optional dependency in host checkout
-    HermesHostHooks = None
-    HermesMemPalaceRoutingPlugin = None
-    HermesMemPalaceRoutingConfig = None
+HermesHostHooks = None
+HermesMemPalaceRoutingPlugin = None
+HermesMemPalaceRoutingConfig = None
 
 # MemPalace Python path
 _MEMPALACE_ROOT = os.path.expanduser("~/.openclaw/workspace/mempalace")
@@ -109,6 +102,19 @@ def _ensure_routing_package_on_path() -> None:
 
 _ensure_routing_package_on_path()
 
+try:
+    from hermes_mempalace_routing import (
+        HermesHostHooks as _HermesHostHooks,
+        HermesMemPalaceRoutingPlugin as _HermesMemPalaceRoutingPlugin,
+        RoutingConfig as _HermesMemPalaceRoutingConfig,
+    )
+except Exception as exc:  # pragma: no cover - optional dependency in host checkout
+    logger.info("mempalace_routing_import_unavailable error=%s", exc)
+else:
+    HermesHostHooks = _HermesHostHooks
+    HermesMemPalaceRoutingPlugin = _HermesMemPalaceRoutingPlugin
+    HermesMemPalaceRoutingConfig = _HermesMemPalaceRoutingConfig
+
 
 def _default_routing_base_dir(hermes_home: str | None = None) -> Path:
     base = Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes"
@@ -132,11 +138,13 @@ def _build_routing_hooks(config: dict | None = None, *, hermes_home: str | None 
         return None
     cfg = config or {}
     base_dir = Path(cfg.get("routing_base_dir") or _default_routing_base_dir(hermes_home))
+    backend = str(cfg.get("memory_backend", "local") or "local").strip() or "local"
+    mempalace_first = backend == "mempalace_first"
     routing_cfg = HermesMemPalaceRoutingConfig(
         base_dir=base_dir,
         storage_backend=cfg.get("routing_storage_backend", "sqlite"),
-        memory_backend=cfg.get("memory_backend", "local"),
-        mempalace_enabled=bool(cfg.get("mempalace_enabled", False)),
+        memory_backend=backend,
+        mempalace_enabled=bool(cfg.get("mempalace_enabled", False) or mempalace_first),
         mempalace_fail_open=bool(cfg.get("mempalace_fail_open", True)),
         mempalace_resume_on_start=bool(cfg.get("mempalace_resume_on_start", True)),
         mempalace_recall_on_every_query=bool(cfg.get("mempalace_recall_on_every_query", True)),
@@ -146,7 +154,7 @@ def _build_routing_hooks(config: dict | None = None, *, hermes_home: str | None 
         mempalace_default_room_strategy=cfg.get("mempalace_default_room_strategy", "fact_type_and_project"),
         mempalace_include_legacy_local_envelopes=bool(cfg.get("mempalace_include_legacy_local_envelopes", False)),
         mempalace_fallback_local_write=bool(cfg.get("mempalace_fallback_local_write", False)),
-        disable_builtin_durable_memory=bool(cfg.get("disable_builtin_durable_memory", False)),
+        disable_builtin_durable_memory=bool(cfg.get("disable_builtin_durable_memory", False) or mempalace_first),
     )
     if "routing_enabled" in cfg:
         routing_cfg.enabled = bool(cfg.get("routing_enabled"))

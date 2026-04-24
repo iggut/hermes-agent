@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import os
+import subprocess
+import sys
+import textwrap
 
 from plugins.memory import mempalace as mempalace_mod
 from plugins.memory.mempalace import MemPalaceMemoryProvider
@@ -127,6 +131,9 @@ def test_mempalace_provider_uses_host_hooks_for_prefetch_and_sync(monkeypatch, t
 
     hooks = _FakeHostHooks.created[-1]
     assert set(hooks.plugin.bound_tools) == {"mempalace_status"}
+    assert hooks.plugin.config.kwargs["memory_backend"] == "mempalace_first"
+    assert hooks.plugin.config.kwargs["mempalace_enabled"] is True
+    assert hooks.plugin.config.kwargs["disable_builtin_durable_memory"] is True
     assert hooks.resume_calls == [
         {
             "query": "sess-1",
@@ -190,3 +197,40 @@ def test_routing_path_resolver_prefers_parent_walk_and_logs_source(monkeypatch, 
     assert f"path={expected_repo}" in caplog.text
     assert "source=parent_walk" in caplog.text
     assert "package_root_valid=True" in caplog.text
+
+
+def test_provider_import_loads_routing_package_after_path_resolution(tmp_path: Path) -> None:
+    repo = tmp_path / "routing_repo"
+    package_dir = repo / "hermes_mempalace_routing"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text(
+        textwrap.dedent(
+            """
+            class HermesHostHooks:
+                pass
+            class HermesMemPalaceRoutingPlugin:
+                pass
+            class RoutingConfig:
+                pass
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["HERMES_MEMPALACE_ROUTING_ROOT"] = str(repo)
+    env["PYTHONPATH"] = "/home/iggut/.hermes/hermes-agent"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from plugins.memory import mempalace as m; print(m.HermesHostHooks.__name__)",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "HermesHostHooks"
